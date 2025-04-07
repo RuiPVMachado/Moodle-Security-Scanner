@@ -1,0 +1,59 @@
+{
+  "book": [
+    {
+      "title": "Book Module RCE",
+      "cve": "CVE-2020-14432",
+      "description": "Potential RCE vulnerability in the Book module print tool.",
+      "severity": "Critical",
+      "affected_moodle_versions": ["3.9", "3.8", "3.7", "3.6"],
+      "references": ["https://moodle.org/mod/forum/discuss.php?d=406815"],
+      "remediation": "Update Moodle to version 3.9.1 or higher."
+    }
+  ],
+  "rss_client": [
+    {
+      "title": "RSS Client Block RCE",
+      "cve": "CVE-2020-25627",
+      "description": "Potential RCE via SSRF in the RSS Client block viewfeed.php.",
+      "severity": "Critical",
+      "affected_moodle_versions": ["3.9", "3.8", "3.7", "3.6", "3.5"],
+      "references": ["https://moodle.org/mod/forum/discuss.php?d=410839"],
+      "remediation": "Update Moodle to version 3.9.2 or higher."
+    }
+  ],
+  "data": [
+    {
+      "title": "Database Activity Module RCE",
+      "cve": "CVE-2021-36393",
+      "description": "Potential RCE vulnerability in the Database Activity module templates.",
+      "severity": "Critical",
+      "affected_moodle_versions": ["3.11", "3.10", "3.9", "3.8"],
+      "references": ["https://moodle.org/mod/forum/discuss.php?d=424800"],
+      "remediation": "Update Moodle to version 3.11.3, 3.10.6, 3.9.9 or higher."
+    }
+  ],
+  "jmol": [
+    {
+      "title": "JMol Filter RCE",
+      "cve": "CVE-2021-40690",
+      "description": "Potential RCE vulnerability in the JMol filter PHP script.",
+      "severity": "Critical",
+      "affected_moodle_versions": ["3.11", "3.10", "3.9"],
+      "references": ["https://moodle.org/mod/forum/discuss.php?d=429473"],
+      "remediation": "Update Moodle to version 3.11.5, 3.10.8, 3.9.11 or higher."
+    }
+  ],
+  "quizaccess_seb": [
+    {
+      "title": "Safe Exam Browser Quiz Access Rule RCE",
+      "cve": "CVE-2022-0326",
+      "description": "Potential RCE vulnerability in the Safe Exam Browser Quiz Access Rule plugin.",
+      "severity": "Critical",
+      "affected_moodle_versions": [
+        "All versions of the plugin before 2020102601"
+      ],
+      "references": ["https://moodle.org/plugins/quizaccess_seb/versions"],
+      "remediation": "Update the Safe Exam Browser plugin to the latest version."
+    }
+  ]
+}
