@@ -17,7 +17,7 @@ Moodle Security Scanner is a specialized tool designed to identify security vuln
 - **SQL Injection**: Tests for SQL injection vulnerabilities in GET/POST parameters and forms
 - **Local File Inclusion**: Detects LFI vulnerabilities that could expose sensitive files
 - **API Security**: Tests Moodle API endpoints for security issues
-- **Version-specific Vulnerabilities**: Targets known vulnerabilities based on detected version
+- **Version-specific Vulnerabilities**: Targets known vulnerabilities based on detected version (where applicable within modules)
 
 ## Installation
 
@@ -46,23 +46,24 @@ python moodle_scanner.py -t https://your-moodle-site.com \
   -o results.json \
   --cookies "MoodleSession=yoursessioncookie" \
   --delay 0.5 \
+  --threads 10 \
   --verbose
 ```
 
 ### Command-line Options
 
-- `-t, --target`: Target Moodle URL (required)
-- `-m, --modules`: Modules to run (comma-separated or 'all')
-- `-o, --output`: Output file for results (JSON or log format)
+- `-t, --target`: Target Moodle URL (e.g., https://moodle.example.com) (required)
+- `-m, --modules`: Comma-separated list of modules to run (e.g., version,xss,auth) or 'all' (default: all)
+- `-o, --output`: Output file (e.g., results.json or results.log)
 - `--proxy`: Proxy URL (e.g., http://127.0.0.1:8080)
-- `--cookies`: Cookies to use in requests
+- `--cookies`: Cookies to use in requests (e.g., 'name1=value1; name2=value2' or "{'name1': 'value1', 'name2': 'value2'}")
 - `--timeout`: Request timeout in seconds (default: 30)
-- `--delay`: Delay between requests in seconds (default: 0)
-- `--threads`: Number of threads for testing (default: 5)
-- `--user-agent`: User-agent string to use
+- `--delay`: Delay between requests in seconds (can be a decimal) (default: 0)
+- `--threads`: Number of threads to use for testing (default: 5)
+- `--user-agent`: User-agent string to use (default: Mozilla/5.0 ...)
 - `--no-verify-ssl`: Disable SSL certificate verification
 - `-v, --verbose`: Enable verbose output
-- `-q, --quiet`: Enable quiet mode (errors only)
+- `-q, --quiet`: Enable quiet mode (only errors will be displayed)
 - `--version`: Show the version number and exit
 
 ## Testing Modules
@@ -78,6 +79,10 @@ The scanner includes the following testing modules:
 | sqli    | Tests for SQL injection vulnerabilities                |
 | lfi     | Tests for local file inclusion vulnerabilities         |
 | api     | Tests API endpoints for security issues                |
+
+## Additional Resources
+
+- **Exploit Guide**: See `exploit_guide.md` for more detailed information on specific vulnerability exploitation techniques, including session hijacking.
 
 ## Security Considerations
 
