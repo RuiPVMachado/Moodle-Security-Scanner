@@ -18,12 +18,13 @@ Moodle Security Scanner is a specialized tool designed to identify security vuln
 - **Local File Inclusion**: Detects LFI vulnerabilities that could expose sensitive files
 - **API Security**: Tests Moodle API endpoints for security issues
 - **Version-specific Vulnerabilities**: Targets known vulnerabilities based on detected version (where applicable within modules)
+- **Comprehensive Reporting**: Generate detailed reports in HTML, TXT, or JSON formats with evidence and remediation steps
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/moodle-security-scanner.git
+git clone https://github.com/RuiPVMachado/moodle-security-scanner.git
 cd moodle-security-scanner
 
 # Install requirements
@@ -43,7 +44,7 @@ Advanced options:
 ```bash
 python moodle_scanner.py -t https://your-moodle-site.com \
   -m version,xss,rce,sqli,lfi,auth,api \
-  -o results.json \
+  -o results.html \
   --cookies "MoodleSession=yoursessioncookie" \
   --delay 0.5 \
   --threads 10 \
@@ -54,7 +55,7 @@ python moodle_scanner.py -t https://your-moodle-site.com \
 
 - `-t, --target`: Target Moodle URL (e.g., https://moodle.example.com) (required)
 - `-m, --modules`: Comma-separated list of modules to run (e.g., version,xss,auth) or 'all' (default: all)
-- `-o, --output`: Output file (e.g., results.json or results.log)
+- `-o, --output`: Output file (e.g., results.json, results.html, results.txt or results.log)
 - `--proxy`: Proxy URL (e.g., http://127.0.0.1:8080)
 - `--cookies`: Cookies to use in requests (e.g., 'name1=value1; name2=value2' or "{'name1': 'value1', 'name2': 'value2'}")
 - `--timeout`: Request timeout in seconds (default: 30)
@@ -80,9 +81,33 @@ The scanner includes the following testing modules:
 | lfi     | Tests for local file inclusion vulnerabilities         |
 | api     | Tests API endpoints for security issues                |
 
-## Additional Resources
+## Report Formats
 
-- **Exploit Guide**: See `exploit_guide.md` for more detailed information on specific vulnerability exploitation techniques, including session hijacking.
+The scanner supports multiple report formats, each providing different levels of detail:
+
+### HTML Report
+
+```bash
+python moodle_scanner.py -t https://your-moodle-site.com -o report.html
+```
+
+Generates a visually formatted HTML report with color-coded vulnerabilities, detailed evidence, and remediation steps.
+
+### Text Report
+
+```bash
+python moodle_scanner.py -t https://your-moodle-site.com -o report.txt
+```
+
+Creates a plain text report that can be viewed in any text editor.
+
+### JSON Report
+
+```bash
+python moodle_scanner.py -t https://your-moodle-site.com -o report.json
+```
+
+Produces a structured JSON file that can be imported into other security tools or processed programmatically.
 
 ## Security Considerations
 
@@ -104,7 +129,7 @@ The scanner includes the following testing modules:
 ║  ██║ ╚═╝ ██║╚██████╔╝╚██████╔╝██████╔╝███████╗███████╗  ║
 ║  ╚═╝     ╚═╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝╚══════╝  ║
 ║                                                          ║
-║  Security Scanner v1.0                                   ║
+║  Security Scanner v1.0.1                                 ║
 ║  A comprehensive security testing tool for Moodle LMS    ║
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
@@ -156,6 +181,26 @@ Top Vulnerabilities:
 
 ====================================================
 ```
+
+## Vulnerability Details in Reports
+
+Each vulnerability report includes:
+
+- **Severity**: Critical, High, Medium, Low, or Info classification
+- **Description**: Detailed explanation of the vulnerability
+- **Evidence**: The specific response or content that triggered detection
+- **URL**: The exact URL where the vulnerability was found
+- **Remediation**: Recommended steps to fix the vulnerability
+- **References**: Links to CVEs, CWEs, or other resources (where applicable)
+- **Payload**: The test payload that triggered the vulnerability (where applicable)
+
+## Performance Considerations
+
+The Local File Inclusion (LFI) module may take longer to complete as it tests multiple endpoints, parameters, and payloads. To improve performance:
+
+- Use a shorter delay value (e.g., `-d 0.1`)
+- Run specific modules instead of all (e.g., `-m version,rce,auth`)
+- Use the `--timeout` parameter to set shorter request timeouts
 
 ## Contributing
 

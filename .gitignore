@@ -1,0 +1,42 @@
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore pentest documentation file
+pentest.mdc
+
+# Ignore compiled bytecode
+*.pyc
+*.pyo
+
+# Ignore distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Ignore logs and local files
+*.log
+.env
+.venv
+venv/
+ENV/
+
+# Ignore IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
