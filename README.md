@@ -206,10 +206,6 @@ The Local File Inclusion (LFI) module may take longer to complete as it tests mu
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Disclaimer
 
 This tool is provided for educational and legitimate security testing purposes only. The authors accept no liability for misuse or damage caused by this program.
