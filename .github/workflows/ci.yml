@@ -28,4 +28,6 @@ jobs:
         run: mypy modules/schema.py tests/test_scanner_core.py
 
       - name: Tests
-        run: pytest -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q
