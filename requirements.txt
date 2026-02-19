@@ -6,3 +6,7 @@ certifi==2023.7.22
 charset-normalizer==3.3.0
 idna==3.4
 soupsieve==2.5.0 
+pytest==8.3.4
+ruff==0.9.10
+mypy==1.15.0
+python-docx==1.1.2

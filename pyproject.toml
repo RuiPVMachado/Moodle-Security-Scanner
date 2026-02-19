@@ -1,0 +1,24 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"moodle_scanner.py" = ["I001", "F401", "E501"]
+"moodle_security_scanner.py" = ["I001"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+follow_imports = "skip"
+warn_return_any = false
+warn_unused_configs = true
+files = [
+  "modules/schema.py",
+  "tests/test_scanner_core.py",
+]

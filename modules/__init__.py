@@ -12,6 +12,7 @@ from modules.auth_tester import MoodleAuthTester
 from modules.api_tester import MoodleAPITester
 from modules.xss_tester import MoodleXSSTester
 from modules.lfi_tester import MoodleLFITester
+from modules.sqli_tester import MoodleSQLITester
 
 # Define module availability for dynamic loading
 available_modules = {
@@ -20,7 +21,8 @@ available_modules = {
     "auth": MoodleAuthTester,
     "api": MoodleAPITester,
     "xss": MoodleXSSTester,
-    "lfi": MoodleLFITester
+    "lfi": MoodleLFITester,
+    "sqli": MoodleSQLITester
 }
 
 __all__ = [
@@ -30,5 +32,6 @@ __all__ = [
     "MoodleAPITester",
     "MoodleXSSTester",
     "MoodleLFITester",
+    "MoodleSQLITester",
     "available_modules"
 ] 

@@ -33,6 +33,23 @@ pip install -r requirements.txt
 
 ## Usage
 
+Canonical command path:
+
+```bash
+python moodle_scanner.py -t https://your-moodle-site.com
+```
+
+`moodle_security_scanner.py` is kept as a backward-compatible wrapper and is deprecated.
+
+GUI launcher (Windows-friendly):
+
+```bash
+python scanner_gui.py
+```
+
+The GUI lets you set target/options/modules, start/stop scans, and view live output in one window.
+You can also choose report output format: `JSON`, `Word (.docx)`, or `Both`.
+
 Basic usage:
 
 ```bash
@@ -100,6 +117,24 @@ python moodle_scanner.py -t https://your-moodle-site.com -o report.txt
 ```
 
 Creates a plain text report that can be viewed in any text editor.
+
+### Manager TXT from existing JSON
+
+If you already have `results.json`, you can generate a manager-friendly text report without re-running the scan:
+
+```bash
+python results_to_txt.py -i results.json -o manager_report.txt
+```
+
+This includes remediation steps, prioritization, and safe validation checklists.
+
+### Manager Word (.docx) from existing JSON
+
+```bash
+python results_to_docx.py -i results.json -o manager_report.docx
+```
+
+This generates a manager-ready Word report with prioritized findings, remediation actions, and safe validation checklists.
 
 ### JSON Report
 
@@ -201,10 +236,22 @@ The Local File Inclusion (LFI) module may take longer to complete as it tests mu
 - Use a shorter delay value (e.g., `-d 0.1`)
 - Run specific modules instead of all (e.g., `-m version,rce,auth`)
 - Use the `--timeout` parameter to set shorter request timeouts
+- Increase `--threads` gradually (e.g., 8-15) and monitor server impact
+- Keep `--verbose` off for faster/cleaner runs unless troubleshooting
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Quality Checks
+
+Run local checks before opening a PR:
+
+```bash
+ruff check moodle_scanner.py moodle_security_scanner.py modules/schema.py tests
+mypy modules/schema.py tests/test_scanner_core.py
+pytest -q
+```
 
 ## Disclaimer
 

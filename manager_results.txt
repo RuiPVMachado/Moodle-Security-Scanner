@@ -1,0 +1,222 @@
+================================================================================
+MOODLE SECURITY SCAN REPORT (MANAGER EXPORT)
+================================================================================
+Target: https://moodle.ensinolusofona.pt/login/index.php/
+Scan Date: 2026-02-19T11:43:28.910258
+Scanner Version: 1.0.1
+Status: complete
+
+SCAN SUMMARY
+--------------------------------------------------------------------------------
+Total Vulnerabilities Found: 8
+Average Risk Score: 89.25
+Critical: 7
+High: 0
+Medium: 1
+Low: 0
+Info: 0
+
+REMEDIATION ROADMAP
+--------------------------------------------------------------------------------
+Immediate (0-24h): Fix Critical findings and lock down sensitive endpoints.
+Short-term (1-7d): Patch affected Moodle core/plugins and harden config.
+Medium-term (1-4w): Add continuous monitoring and recurring scans.
+
+SAFE VALIDATION NOTE
+--------------------------------------------------------------------------------
+This report includes defensive remediation and validation guidance only.
+
+DETAILED FINDINGS
+================================================================================
+1. [Critical] RCE Vulnerability in Book Module Plugin
+--------------------------------------------------------------------------------
+Module: rce
+Confidence: high
+Exploitability: medium
+Risk Score: 92
+Description: The book module print tool in older Moodle versions allows PHP code injection.
+URL: https://moodle.ensinolusofona.pt/login/index.php/mod/book/tool/print/index.php
+Evidence: Vulnerable endpoint: https://moodle.ensinolusofona.pt/login/index.php/mod/book/tool/print/index.php
+CVE: CVE-2020-14432
+Reference: https://nvd.nist.gov/vuln/detail/CVE-2020-14432
+CWE: CWE-94
+Reference: https://cwe.mitre.org/data/definitions/94.html
+Remediation: Update the plugin to the latest version or disable it if not needed.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+2. [Critical] RCE Vulnerability in RSS Client Block Plugin
+--------------------------------------------------------------------------------
+Module: rce
+Confidence: high
+Exploitability: medium
+Risk Score: 92
+Description: The RSS Client block in older Moodle versions allows injecting arbitrary PHP streams.
+URL: https://moodle.ensinolusofona.pt/login/index.php/blocks/rss_client/viewfeed.php
+Evidence: Vulnerable endpoint: https://moodle.ensinolusofona.pt/login/index.php/blocks/rss_client/viewfeed.php
+CVE: CVE-2020-25627
+Reference: https://nvd.nist.gov/vuln/detail/CVE-2020-25627
+CWE: CWE-73
+Reference: https://cwe.mitre.org/data/definitions/73.html
+Remediation: Update the plugin to the latest version or disable it if not needed.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+3. [Critical] RCE Vulnerability in Database Activity Module Plugin
+--------------------------------------------------------------------------------
+Module: rce
+Confidence: high
+Exploitability: medium
+Risk Score: 92
+Description: The Database activity module in older Moodle versions allows PHP code injection.
+URL: https://moodle.ensinolusofona.pt/login/index.php/mod/data/view.php
+Evidence: Vulnerable endpoint: https://moodle.ensinolusofona.pt/login/index.php/mod/data/view.php
+CVE: CVE-2021-36393
+Reference: https://nvd.nist.gov/vuln/detail/CVE-2021-36393
+CWE: CWE-94
+Reference: https://cwe.mitre.org/data/definitions/94.html
+Remediation: Update the plugin to the latest version or disable it if not needed.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+4. [Critical] RCE Vulnerability in JMol Filter Plugin
+--------------------------------------------------------------------------------
+Module: rce
+Confidence: high
+Exploitability: medium
+Risk Score: 92
+Description: The JMol filter in older Moodle versions allows OS command injection.
+URL: https://moodle.ensinolusofona.pt/login/index.php/filter/jmol/js/jsmol/php/jsmol.php
+Evidence: Vulnerable endpoint: https://moodle.ensinolusofona.pt/login/index.php/filter/jmol/js/jsmol/php/jsmol.php
+CVE: CVE-2021-40690
+Reference: https://nvd.nist.gov/vuln/detail/CVE-2021-40690
+CWE: CWE-78
+Reference: https://cwe.mitre.org/data/definitions/78.html
+Remediation: Update the plugin to the latest version or disable it if not needed.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+5. [Critical] RCE Vulnerability in Safe Exam Browser Quiz Access Rule Plugin
+--------------------------------------------------------------------------------
+Module: rce
+Confidence: high
+Exploitability: medium
+Risk Score: 92
+Description: The Safe Exam Browser Quiz Access Rule in older Moodle versions allows PHP code injection.
+URL: https://moodle.ensinolusofona.pt/login/index.php/mod/quiz/accessrule/seb/rule.php
+Evidence: Vulnerable endpoint: https://moodle.ensinolusofona.pt/login/index.php/mod/quiz/accessrule/seb/rule.php
+CVE: CVE-2022-0326
+Reference: https://nvd.nist.gov/vuln/detail/CVE-2022-0326
+CWE: CWE-94
+Reference: https://cwe.mitre.org/data/definitions/94.html
+Remediation: Update the plugin to the latest version or disable it if not needed.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+6. [Critical] Admin Access Without Authentication
+--------------------------------------------------------------------------------
+Module: rce
+Confidence: high
+Exploitability: medium
+Risk Score: 92
+Description: The Moodle admin interface is accessible without authentication.
+URL: https://moodle.ensinolusofona.pt/login/index.php/admin/
+Evidence: Admin URL: https://moodle.ensinolusofona.pt/login/index.php/admin/ is accessible without login
+CWE: CWE-306
+Reference: https://cwe.mitre.org/data/definitions/306.html
+Remediation: Configure proper authentication requirements for all sensitive areas of the application.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+7. [Critical] SQL Injection Vulnerability
+--------------------------------------------------------------------------------
+Module: sqli
+Confidence: high
+Exploitability: high
+Risk Score: 100
+Description: The /mod/quiz/attempt.php endpoint is vulnerable to SQL injection via the cm_id parameter.
+URL: https://moodle.ensinolusofona.pt/login/index.php//mod/quiz/attempt.php?cm_id=%27%20OR%201%3D1%20GROUP%20BY%20CONCAT_WS%280x3a%2CVERSION%28%29%2CFLOOR%28RAND%280%29%2A2%29%29%20HAVING%20MIN%280%29%20--%20
+Evidence: Payload: ' OR 1=1 GROUP BY CONCAT_WS(0x3a,VERSION(),FLOOR(RAND(0)*2)) HAVING MIN(0) -- 
+Response indicates successful SQL injection.
+Payload Details: omitted in manager report
+Remediation: Use parameterized queries or ORM with proper input validation.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.
+
+8. [Medium] Web Services API Information Disclosure
+--------------------------------------------------------------------------------
+Module: api
+Confidence: high
+Exploitability: medium
+Risk Score: 62
+Description: The Moodle web services API is disclosing sensitive information in error messages.
+URL: https://moodle.ensinolusofona.pt/login/index.php/
+Evidence: exception","moodle-core-notification-ajaxexception"]},"moodle-core-notification-dialogue":{"requires":["base","node","panel","escape","event-key","dd-plugin","moodle-core-widget-focusafterclose","moodle-core-lockscroll"]},"moodle-core-notification-alert":{"requires":["moodle-core-notification-dialogue"]},"moodle-core-notification-confirm":{"requires":["moodle-core-notification-dialogue"]},"moodle-core-notification-exception":{"requires":["moodle-core-notification-dialogue"]},"moodle-core-notification-ajaxexception":{"requires":["moodle-core-notification-dialogue"]},"moodle-core-dragdrop":{"requires":["base","node","io","dom","dd","event-key","event-focus","moodle-core-notification"]},"moodle-core-event":{"requires":["event-custom"]},"moodle-core-blocks":{"requires":["base","node","io","dom
+...[truncated for readability; see JSON report]
+Remediation: Configure PHP to disable displaying errors and ensure Moodle debugging is set to normal or minimal in production.
+Fix Steps (Actionable):
+  1) Assign an owner and change window.
+  2) Patch/update impacted Moodle component or plugin.
+  3) Disable/remove vulnerable component if no patch is available.
+  4) Restrict access/authentication for sensitive endpoints.
+  5) Re-test and document closure evidence.
+Safe Validation Checklist:
+  - Confirm endpoint no longer behaves as vulnerable.
+  - Confirm production errors do not expose sensitive internals.
+  - Re-run scanner module and verify finding is gone/downgraded.

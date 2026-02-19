@@ -12,6 +12,7 @@ import json
 import sys
 import time
 import os
+import inspect
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any
 
@@ -28,6 +29,7 @@ try:
         MoodleLFITester,
         available_modules
     )
+    from modules.schema import normalize_vulnerabilities
 except ImportError as e:
     print(f"Error: Missing required module - {str(e)}")
     print("Please install required dependencies using:")
@@ -51,11 +53,8 @@ class MoodleScanner:
             args: Command line arguments parsed by argparse
         """
         self.args = args
-        self.target_url = self._normalize_url(args.target)
         self.output_file = args.output
-        self.modules_to_run = self._parse_modules(args.modules)
         self.proxy = args.proxy
-        self.cookies = self._parse_cookies(args.cookies)
         self.timeout = args.timeout
         self.delay = args.delay
         self.threads = args.threads
@@ -63,7 +62,14 @@ class MoodleScanner:
         self.verify_ssl = not args.no_verify_ssl
         self.verbose = args.verbose
         self.quiet = args.quiet
-        self.logger = None  # Will be set up in setup_logging()
+        self.logger = logging.getLogger("MoodleScanner")
+
+        # Setup logging first because normalization and parsing may log warnings
+        self.setup_logging()
+
+        self.target_url = self._normalize_url(args.target)
+        self.modules_to_run = self._parse_modules(args.modules)
+        self.cookies = self._parse_cookies(args.cookies)
         
         # Initialize results structure
         self.results = {
@@ -77,9 +83,6 @@ class MoodleScanner:
             "version_info": {},
             "summary": {}
         }
-        
-        # Setup logging
-        self.setup_logging()
         
         self.logger.info(f"Initializing scan against {self.target_url}")
         
@@ -169,10 +172,14 @@ class MoodleScanner:
             return list(available_modules.keys())
         
         modules = []
+        seen_modules = set()
         for module in modules_arg.split(','):
             module = module.strip().lower()
-            if module in available_modules:
+            if module in available_modules and module not in seen_modules:
                 modules.append(module)
+                seen_modules.add(module)
+            elif module in seen_modules:
+                continue
             else:
                 self.logger.warning(
                     f"Unknown module '{module}'. Available modules: {', '.join(available_modules.keys())}"
@@ -229,7 +236,22 @@ class MoodleScanner:
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝{Style.RESET_ALL}
         """
-        print(banner)
+
+        ascii_banner = f"""
+{Fore.CYAN}+----------------------------------------------------------+
+|                                                          |
+|  {Fore.GREEN}MOODLE SECURITY SCANNER{Fore.CYAN}                                 |
+|  {Fore.YELLOW}Security Scanner v1.0.1{Fore.CYAN}                               |
+|  {Fore.YELLOW}A comprehensive security testing tool for Moodle LMS{Fore.CYAN}  |
+|                                                          |
++----------------------------------------------------------+{Style.RESET_ALL}
+        """
+
+        try:
+            print(banner)
+        except UnicodeEncodeError:
+            print(ascii_banner)
+
         print(f"Target: {Fore.GREEN}{self.target_url}{Style.RESET_ALL}")
         print(f"Modules: {Fore.GREEN}{', '.join(self.modules_to_run)}{Style.RESET_ALL}")
         print(f"Starting scan at: {Fore.GREEN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
@@ -326,17 +348,20 @@ class MoodleScanner:
             # Use the appropriate module class based on the module name
             module_class = available_modules[module_name]
             
-            # Initialize the module with common parameters
-            module = module_class(
-                target_url=self.target_url,
-                logger=self.logger,
-                timeout=self.timeout,
-                proxy=self.proxy,
-                cookies=self.cookies,
-                delay=self.delay,
-                user_agent=self.user_agent if hasattr(self, 'user_agent') else None,
-                verify_ssl=self.verify_ssl if hasattr(self, 'verify_ssl') else True
-            )
+            # Initialize the module with compatible parameters only
+            module_kwargs = {
+                "target_url": self.target_url,
+                "logger": self.logger,
+                "timeout": self.timeout,
+                "proxy": self.proxy,
+                "cookies": self.cookies,
+                "delay": self.delay,
+                "user_agent": self.user_agent,
+                "verify_ssl": self.verify_ssl,
+            }
+            accepted_params = inspect.signature(module_class.__init__).parameters
+            filtered_kwargs = {k: v for k, v in module_kwargs.items() if k in accepted_params}
+            module = module_class(**filtered_kwargs)
             
             # Set version info if available
             if hasattr(module, 'set_version_info') and self.results.get("version_info"):
@@ -347,7 +372,11 @@ class MoodleScanner:
             
             # Process results
             if results:
-                vulnerabilities = results.get("vulnerabilities", [])
+                vulnerabilities = normalize_vulnerabilities(
+                    results.get("vulnerabilities", []),
+                    module_name=module_name,
+                    target_url=self.target_url
+                )
                 if vulnerabilities:
                     self.results["vulnerabilities"].extend(vulnerabilities)
                     self.logger.info(f"Found {len(vulnerabilities)} {module_name} vulnerabilities")
@@ -370,7 +399,18 @@ class MoodleScanner:
                 "Low": 0,
                 "Info": 0
             },
+            "confidence_counts": {
+                "high": 0,
+                "medium": 0,
+                "low": 0
+            },
+            "exploitability_counts": {
+                "high": 0,
+                "medium": 0,
+                "low": 0
+            },
             "vulnerabilities_by_module": {},
+            "average_risk_score": 0,
             "top_vulnerabilities": []
         }
         
@@ -381,33 +421,48 @@ class MoodleScanner:
                 summary["severity_counts"][severity] += 1
             else:
                 summary["severity_counts"][severity] = 1
+
+            confidence = vuln.get("confidence", "medium")
+            if confidence in summary["confidence_counts"]:
+                summary["confidence_counts"][confidence] += 1
+
+            exploitability = vuln.get("exploitability", "medium")
+            if exploitability in summary["exploitability_counts"]:
+                summary["exploitability_counts"][exploitability] += 1
         
         # Count vulnerabilities by module
         for module in self.modules_to_run:
             summary["vulnerabilities_by_module"][module] = 0
         
         for vuln in vulnerabilities:
-            # Try to determine which module found this vulnerability
-            module = None
-            for mod_name in available_modules.keys():
-                if mod_name.lower() in vuln.get("title", "").lower():
-                    module = mod_name
-                    break
-            
+            module = vuln.get("module")
             if module and module in summary["vulnerabilities_by_module"]:
                 summary["vulnerabilities_by_module"][module] += 1
         
-        # Get top vulnerabilities (sorted by severity)
+        # Get top vulnerabilities (sorted by risk score and severity)
         severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
         sorted_vulns = sorted(
             vulnerabilities,
-            key=lambda x: severity_order.get(x.get("severity", "Unknown"), 999)
+            key=lambda x: (
+                -int(x.get("risk_score", 0)),
+                severity_order.get(x.get("severity", "Unknown"), 999)
+            )
         )
+
+        if vulnerabilities:
+            summary["average_risk_score"] = round(
+                sum(int(vuln.get("risk_score", 0)) for vuln in vulnerabilities) / len(vulnerabilities),
+                2
+            )
         
         summary["top_vulnerabilities"] = [
             {
                 "title": vuln.get("title", "Unknown"),
-                "severity": vuln.get("severity", "Unknown")
+                "severity": vuln.get("severity", "Unknown"),
+                "module": vuln.get("module", "unknown"),
+                "confidence": vuln.get("confidence", "medium"),
+                "exploitability": vuln.get("exploitability", "medium"),
+                "risk_score": vuln.get("risk_score", 0)
             }
             for vuln in sorted_vulns[:10]  # Top 10 vulnerabilities
         ]
@@ -771,7 +826,7 @@ class MoodleScanner:
         # Start building the text report
         report = [
             "=" * 80,
-            f"MOODLE SECURITY SCAN REPORT",
+            "MOODLE SECURITY SCAN REPORT",
             "=" * 80,
             f"Target: {self.target_url}",
             f"Scan Date: {self.results['scan_info']['timestamp']}",
@@ -782,6 +837,7 @@ class MoodleScanner:
             "-" * 80,
             f"Moodle Version: {version_info.get('version', 'Unknown')}",
             f"Total Vulnerabilities Found: {summary.get('total_vulnerabilities', 0)}",
+            f"Average Risk Score: {summary.get('average_risk_score', 0)}",
             "",
             "Vulnerabilities by Severity:",
             f"  Critical: {summary.get('severity_counts', {}).get('Critical', 0)}",
@@ -790,12 +846,40 @@ class MoodleScanner:
             f"  Low: {summary.get('severity_counts', {}).get('Low', 0)}",
             f"  Info: {summary.get('severity_counts', {}).get('Info', 0)}",
             "",
+            "Confidence Levels:",
+            f"  High: {summary.get('confidence_counts', {}).get('high', 0)}",
+            f"  Medium: {summary.get('confidence_counts', {}).get('medium', 0)}",
+            f"  Low: {summary.get('confidence_counts', {}).get('low', 0)}",
+            "",
+            "Exploitability Levels:",
+            f"  High: {summary.get('exploitability_counts', {}).get('high', 0)}",
+            f"  Medium: {summary.get('exploitability_counts', {}).get('medium', 0)}",
+            f"  Low: {summary.get('exploitability_counts', {}).get('low', 0)}",
+            "",
             "Vulnerabilities by Module:"
         ]
         
         # Add module counts
         for module, count in summary.get("vulnerabilities_by_module", {}).items():
             report.append(f"  {module}: {count}")
+
+        report.extend([
+            "",
+            "REMEDIATION ROADMAP (MANAGER VIEW)",
+            "-" * 80,
+            "Immediate (0-24h): Address all Critical vulnerabilities and exposed admin paths.",
+            "Short-term (1-7 days): Patch vulnerable plugins/components and reconfigure unsafe defaults.",
+            "Medium-term (1-4 weeks): Add hardening controls, monitoring, and recurring security scans.",
+            "",
+            "SAFE VALIDATION NOTE",
+            "-" * 80,
+            "This report includes remediation and defensive validation guidance only.",
+            "",
+            "SCAN SPEED GUIDANCE",
+            "-" * 80,
+            "For faster scans: run fewer modules, lower timeout, keep delay at 0, and increase threads carefully.",
+            ""
+        ])
         
         report.append("")
         report.append("DETAILED VULNERABILITY FINDINGS")
@@ -804,6 +888,8 @@ class MoodleScanner:
         if not vulns:
             report.append("No vulnerabilities were found during the scan.")
         else:
+            max_evidence_chars = 800
+
             # Sort vulnerabilities by severity
             severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
             sorted_vulns = sorted(
@@ -819,6 +905,10 @@ class MoodleScanner:
                     f"{i}. [{severity}] {vuln.get('title', 'Unknown Vulnerability')}",
                     "-" * 80,
                     f"Description: {vuln.get('description', 'No description provided.')}",
+                    f"Module: {vuln.get('module', 'unknown')}",
+                    f"Confidence: {vuln.get('confidence', 'unknown')}",
+                    f"Exploitability: {vuln.get('exploitability', 'unknown')}",
+                    f"Risk Score: {vuln.get('risk_score', 'unknown')}",
                 ])
                 
                 # Add URL if available
@@ -835,24 +925,50 @@ class MoodleScanner:
                 
                 # Add evidence if available
                 if "evidence" in vuln:
+                    evidence_text = str(vuln.get("evidence", ""))
+                    if len(evidence_text) > max_evidence_chars:
+                        evidence_text = (
+                            evidence_text[:max_evidence_chars]
+                            + "\n...[truncated for readability; see JSON report for full evidence]"
+                        )
                     report.extend([
                         "Evidence:",
-                        f"{vuln.get('evidence')}"
+                        evidence_text
                     ])
                 
-                # Add payload if available
-                if "payload" in vuln:
-                    report.append(f"Payload: {vuln.get('payload')}")
+                # Omit payload details in manager-focused report
+                if "payload" in vuln and vuln.get("payload"):
+                    report.append("Payload Details: omitted in manager report")
                 
                 # Add remediation steps if available
                 if "remediation" in vuln:
                     report.append(f"Remediation: {vuln.get('remediation')}")
+
+                report.extend([
+                    "Fix Steps (Actionable):",
+                    "  1) Assign owner and maintenance window for this component.",
+                    "  2) Apply vendor updates/patches for Moodle core or affected plugin.",
+                    "  3) Apply least-privilege and authentication controls on sensitive endpoints.",
+                    "  4) Remove/disable vulnerable or unused plugins if no patch exists.",
+                    "  5) Retest this endpoint after the change and capture evidence.",
+                    "Safe Validation Checklist:",
+                    "  - Confirm endpoint behavior is restricted as expected after fix.",
+                    "  - Confirm error details are no longer exposed in production responses.",
+                    "  - Re-run scanner on this module and verify finding is removed or downgraded.",
+                    "  - Review application and web server logs for abnormal access attempts.",
+                ])
                 
                 # Add references if available
                 if "references" in vuln and vuln["references"]:
                     report.append("References:")
                     for ref in vuln["references"]:
                         report.append(f"  - {ref}")
+
+                if vuln.get("cve"):
+                    report.append(f"  - https://nvd.nist.gov/vuln/detail/{vuln.get('cve')}")
+                if vuln.get("cwe"):
+                    cwe_id = str(vuln.get("cwe")).replace("CWE-", "")
+                    report.append(f"  - https://cwe.mitre.org/data/definitions/{cwe_id}.html")
                 
                 report.append("")
                 report.append("-" * 80)
