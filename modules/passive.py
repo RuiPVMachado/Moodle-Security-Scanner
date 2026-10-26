@@ -247,7 +247,8 @@ class MoodlePassiveTester:
 
         csp = headers.get("content-security-policy", "")
         xfo = headers.get("x-frame-options", "")
-        if not csp and not xfo:
+        has_frame_ancestors = "frame-ancestors" in csp.lower()
+        if not xfo and not has_frame_ancestors:
             results["vulnerabilities"].append(
                 self._finding(
                     title="Proteção contra clickjacking ausente",
@@ -567,7 +568,7 @@ class MoodlePassiveTester:
                     )
                 )
 
-        for name in ("phpinfo.php", "info.php", "test.php"):
+        for name in ("phpinfo.php", "info.php", "test.php", "admin/phpinfo.php"):
             response = self._get(self.target_url + name, allow_redirects=False)
             if response is None or response.status_code != 200:
                 continue

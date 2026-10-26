@@ -28,6 +28,9 @@ def build_doc(data: dict[str, Any]) -> Document:
     doc.add_paragraph(f"Scan Date: {scan_info.get('timestamp', 'Unknown')}")
     doc.add_paragraph(f"Scanner Version: {scan_info.get('scanner_version', 'Unknown')}")
     doc.add_paragraph(f"Status: {scan_info.get('status', 'Unknown')}")
+    doc.add_paragraph(
+        f"Authenticated: {(scan_info.get('auth') or {}).get('message', 'n/a')}"
+    )
     doc.add_paragraph(f"Moodle Version: {data.get('version_info', {}).get('version', 'Unknown')}")
 
     doc.add_heading("Scan Summary", level=1)
@@ -35,11 +38,22 @@ def build_doc(data: dict[str, Any]) -> Document:
     doc.add_paragraph(f"Confirmed Findings: {summary.get('verified_findings', 0)}")
     doc.add_paragraph(f"Version-based Findings: {summary.get('version_based_findings', 0)}")
     doc.add_paragraph(f"Average Risk Score: {summary.get('average_risk_score', 0)}")
+    doc.add_paragraph(
+        f"Average Risk (verified): {summary.get('average_risk_score_verified', 0)}"
+    )
+    doc.add_paragraph(
+        f"Average Risk (version): {summary.get('average_risk_score_version', 0)}"
+    )
     doc.add_paragraph(f"Critical: {summary.get('severity_counts', {}).get('Critical', 0)}")
     doc.add_paragraph(f"High: {summary.get('severity_counts', {}).get('High', 0)}")
     doc.add_paragraph(f"Medium: {summary.get('severity_counts', {}).get('Medium', 0)}")
     doc.add_paragraph(f"Low: {summary.get('severity_counts', {}).get('Low', 0)}")
     doc.add_paragraph(f"Info: {summary.get('severity_counts', {}).get('Info', 0)}")
+    validation_counts = summary.get("validation_counts", {})
+    if validation_counts:
+        doc.add_heading("CVE Validation", level=2)
+        for status, count in sorted(validation_counts.items()):
+            doc.add_paragraph(f"{status}: {count}")
 
     doc.add_heading("Remediation Roadmap", level=1)
     doc.add_paragraph("Immediate (0-24h): Fix Critical findings and lock down sensitive endpoints.")
@@ -95,6 +109,9 @@ def build_doc(data: dict[str, Any]) -> Document:
             cve = vuln.get("cve")
             doc.add_paragraph(f"CVE: {cve}")
             doc.add_paragraph(f"Reference: https://nvd.nist.gov/vuln/detail/{cve}")
+        msa_id = (vuln.get("metadata") or {}).get("msa_id")
+        if msa_id:
+            doc.add_paragraph(f"MSA: {msa_id}")
 
         if vuln.get("cwe"):
             cwe = str(vuln.get("cwe"))

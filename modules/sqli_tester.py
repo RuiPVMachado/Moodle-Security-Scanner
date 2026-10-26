@@ -80,12 +80,14 @@ class MoodleSQLITester:
         session=None,
         deep: bool = False,
         max_tests: int = 20,
+        crawl_pages: int = 0,
         **_: Any,
     ) -> None:
         self.target_url = target_url.rstrip("/") + "/"
         self.timeout = timeout
         self.deep = deep
         self.max_tests = max(1, max_tests if deep else min(max_tests, 30))
+        self.crawl_pages = max(0, int(crawl_pages or 0))
         self.version_info: Dict[str, Any] = {}
         self.logger = logger or logging.getLogger("MoodleSQLITester")
         if session is None:
@@ -111,6 +113,7 @@ class MoodleSQLITester:
             timeout=self.timeout,
             logger=self.logger,
             include_hidden_ids=True,
+            crawl_pages=self.crawl_pages,
         )
         if not targets:
             results["info"].append(

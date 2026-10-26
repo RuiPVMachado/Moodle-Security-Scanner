@@ -16,6 +16,7 @@ import random
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
+from urllib.parse import urljoin, urlparse
 
 import requests
 import urllib3
@@ -23,7 +24,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 DEFAULT_USER_AGENT = (
-    "MoodleSecurityScanner/2.0 (+https://github.com/RuiPVMachado/Moodle-Security-Scanner)"
+    "MoodleSecurityScanner/2.1 (+https://github.com/RuiPVMachado/Moodle-Security-Scanner)"
 )
 
 DEFAULT_ACCEPT = (
@@ -53,6 +54,59 @@ class RateLimiter:
             self._next_at = time.monotonic() + self.min_interval
 
 
+class RequestBudget:
+    """Thread-safe global request counter shared by every module.
+
+    ``0`` means unlimited.  When the budget is exhausted, ``acquire`` raises
+    :class:`RequestBudgetExceeded`, which callers treat like a network failure.
+    """
+
+    def __init__(self, max_requests: int = 0) -> None:
+        self.max_requests = max(0, int(max_requests or 0))
+        self._lock = threading.Lock()
+        self._count = 0
+
+    @property
+    def used(self) -> int:
+        with self._lock:
+            return self._count
+
+    def acquire(self) -> None:
+        if self.max_requests <= 0:
+            with self._lock:
+                self._count += 1
+            return
+        with self._lock:
+            if self._count >= self.max_requests:
+                raise RequestBudgetExceeded(
+                    f"Request budget exhausted ({self.max_requests} requests)."
+                )
+            self._count += 1
+
+
+class RequestBudgetExceeded(requests.RequestException):
+    """Raised when the global scan request budget is exhausted."""
+
+
+def _host_key(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _same_site_redirect(current_url: str, next_url: str) -> bool:
+    """Allow same-host redirects and the common http -> https upgrade."""
+
+    current = urlparse(current_url)
+    nxt = urlparse(next_url)
+    if _host_key(current_url) != _host_key(next_url):
+        return False
+    if current.scheme == nxt.scheme:
+        return True
+    if current.scheme == "http" and nxt.scheme == "https":
+        return (current.port or 80) == 80 and (nxt.port or 443) == 443
+    return False
+
+
 class SecureSession(requests.Session):
     """requests.Session with safe defaults and bounded response bodies."""
 
@@ -67,12 +121,18 @@ class SecureSession(requests.Session):
         rate_limiter: Optional[RateLimiter] = None,
         retries: int = 2,
         extra_headers: Optional[Dict[str, str]] = None,
+        same_origin_redirects: bool = True,
+        max_redirects: int = 6,
+        request_budget: Optional[RequestBudget] = None,
     ) -> None:
         super().__init__()
         self.verify_ssl = bool(verify_ssl)
         self.timeout = float(timeout)
         self.max_response_bytes = max(1024, int(max_response_bytes))
         self.rate_limiter = rate_limiter or RateLimiter(0)
+        self.same_origin_redirects = bool(same_origin_redirects)
+        self.max_redirects = max(0, int(max_redirects))
+        self.request_budget = request_budget
         self.truncated_responses = 0
 
         if not self.verify_ssl:
@@ -115,11 +175,12 @@ class SecureSession(requests.Session):
         if extra_headers:
             self.headers.update(extra_headers)
 
-    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+    def _request_once(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        if self.request_budget is not None:
+            self.request_budget.acquire()
         self.rate_limiter.wait()
         kwargs.setdefault("timeout", self.timeout)
         kwargs.setdefault("verify", self.verify_ssl)
-        kwargs.setdefault("allow_redirects", True)
 
         # Download at most max_response_bytes.  A malicious target can return
         # gigabytes; requests would otherwise buffer all of it in memory.
@@ -137,6 +198,40 @@ class SecureSession(requests.Session):
                 response.raw.close()
         finally:
             response.close()
+        return response
+
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        allow_redirects = bool(kwargs.pop("allow_redirects", True))
+        kwargs.setdefault("stream", True)
+        current_method = method
+        current_url = url
+        request_kwargs = dict(kwargs)
+
+        response: Optional[requests.Response] = None
+        for _ in range(self.max_redirects + 1):
+            response = self._request_once(
+                current_method,
+                current_url,
+                allow_redirects=False,
+                **request_kwargs,
+            )
+            if not allow_redirects or response.status_code not in (301, 302, 303, 307, 308):
+                return response
+
+            location = response.headers.get("Location")
+            if not location:
+                return response
+            next_url = urljoin(current_url, location)
+            if self.same_origin_redirects and not _same_site_redirect(current_url, next_url):
+                return response
+            if response.status_code in (301, 302, 303) and current_method.upper() != "HEAD":
+                current_method = "GET"
+                request_kwargs.pop("data", None)
+                request_kwargs.pop("json", None)
+                request_kwargs.pop("files", None)
+                request_kwargs.pop("params", None)
+            current_url = next_url
+        assert response is not None
         return response
 
     def get_text(
@@ -190,6 +285,8 @@ def build_session(
     max_response_bytes: int = 2_000_000,
     rate_limiter: Optional[RateLimiter] = None,
     retries: int = 2,
+    same_origin_redirects: bool = True,
+    request_budget: Optional[RequestBudget] = None,
 ) -> SecureSession:
     session = SecureSession(
         verify_ssl=verify_ssl,
@@ -199,6 +296,8 @@ def build_session(
         max_response_bytes=max_response_bytes,
         rate_limiter=rate_limiter,
         retries=retries,
+        same_origin_redirects=same_origin_redirects,
+        request_budget=request_budget,
     )
     if cookies:
         session.cookies.update(cookies)

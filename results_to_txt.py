@@ -28,6 +28,7 @@ def render_report(data: dict[str, Any]) -> str:
         f"Scan Date: {scan_info.get('timestamp', 'Unknown')}",
         f"Scanner Version: {scan_info.get('scanner_version', 'Unknown')}",
         f"Status: {scan_info.get('status', 'Unknown')}",
+        f"Authenticated: {(scan_info.get('auth') or {}).get('message', 'n/a')}",
         f"Moodle Version: {data.get('version_info', {}).get('version', 'Unknown')}",
         "",
         "SCAN SUMMARY",
@@ -36,12 +37,22 @@ def render_report(data: dict[str, Any]) -> str:
         f"Confirmed Findings: {summary.get('verified_findings', 0)}",
         f"Version-based Findings: {summary.get('version_based_findings', 0)}",
         f"Average Risk Score: {summary.get('average_risk_score', 0)}",
+        f"Average Risk (verified): {summary.get('average_risk_score_verified', 0)}",
+        f"Average Risk (version): {summary.get('average_risk_score_version', 0)}",
         f"Critical: {summary.get('severity_counts', {}).get('Critical', 0)}",
         f"High: {summary.get('severity_counts', {}).get('High', 0)}",
         f"Medium: {summary.get('severity_counts', {}).get('Medium', 0)}",
         f"Low: {summary.get('severity_counts', {}).get('Low', 0)}",
         f"Info: {summary.get('severity_counts', {}).get('Info', 0)}",
         "",
+    ]
+    validation_counts = summary.get("validation_counts", {})
+    if validation_counts:
+        lines.append("CVE Validation:")
+        for status, count in sorted(validation_counts.items()):
+            lines.append(f"  {status}: {count}")
+        lines.append("")
+    lines.extend([
         "REMEDIATION ROADMAP",
         "-" * 80,
         "Immediate (0-24h): Fix Critical findings and lock down sensitive endpoints.",
@@ -54,7 +65,7 @@ def render_report(data: dict[str, Any]) -> str:
         "",
         "DETAILED FINDINGS",
         "=" * 80,
-    ]
+    ])
 
     if not vulns:
         lines.append("No vulnerabilities found.")
@@ -99,6 +110,9 @@ def render_report(data: dict[str, Any]) -> str:
         if vuln.get("cve"):
             lines.append(f"CVE: {vuln.get('cve')}")
             lines.append(f"Reference: https://nvd.nist.gov/vuln/detail/{vuln.get('cve')}")
+        msa_id = (vuln.get("metadata") or {}).get("msa_id")
+        if msa_id:
+            lines.append(f"MSA: {msa_id}")
 
         if vuln.get("cwe"):
             cwe = str(vuln.get("cwe"))

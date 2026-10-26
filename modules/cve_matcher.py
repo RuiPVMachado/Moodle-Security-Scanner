@@ -25,8 +25,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from modules.cache import cache_filename
 from modules.cve_validation import default_validation, validate_finding
 from modules.http import build_session
+from modules.msa import MSAMatcher
 
 try:  # optional dependency, used only to calculate CVSS base scores
     from packaging.version import Version
@@ -34,9 +36,11 @@ except ImportError:  # pragma: no cover
     Version = None  # type: ignore
 
 try:
-    from cvss import CVSS3
+    from cvss import CVSS2, CVSS3, CVSS4
 except ImportError:  # pragma: no cover
+    CVSS2 = None  # type: ignore
     CVSS3 = None  # type: ignore
+    CVSS4 = None  # type: ignore
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 KEV_URL = (
@@ -59,6 +63,25 @@ _SEVERITY_MAP = {
     "INFO": "Info",
     "INFORMATIONAL": "Info",
 }
+_SEVERITY_RANK = {"Info": 0, "Low": 1, "Medium": 2, "High": 3, "Critical": 4}
+
+
+def severity_from_cvss(score: Optional[float]) -> Optional[str]:
+    if score is None:
+        return None
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+    if value >= 9.0:
+        return "Critical"
+    if value >= 7.0:
+        return "High"
+    if value >= 4.0:
+        return "Medium"
+    if value > 0:
+        return "Low"
+    return "Info"
 
 
 def normalize_version(value: Optional[str]) -> Optional[str]:
@@ -101,7 +124,7 @@ class CVEMatcher:
         self.session = build_session(
             verify_ssl=True,
             timeout=timeout,
-            user_agent="MoodleSecurityScanner/2.0 (CVE data)",
+            user_agent="MoodleSecurityScanner/2.1 (CVE data)",
             retries=2,
         )
         try:
@@ -115,8 +138,7 @@ class CVEMatcher:
 
     # ------------------------------------------------------------------ cache
     def _cache_path(self, name: str) -> Path:
-        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
-        return self.cache_dir / safe
+        return self.cache_dir / cache_filename(name, max_length=100)
 
     def _read_cache(self, name: str) -> Tuple[Optional[Any], bool]:
         path = self._cache_path(name)
@@ -277,12 +299,20 @@ class CVEMatcher:
 
         database_specific = vulnerability.get("database_specific") or {}
         severity_raw = str(database_specific.get("severity") or "").upper()
-        severity = _SEVERITY_MAP.get(severity_raw, "Medium")
         cwe_ids = database_specific.get("cwe_ids") or []
         cwe = cwe_ids[0] if cwe_ids else None
 
         fixed_versions = self._extract_fixed_versions(vulnerability)
         cvss_score, cvss_vector = self._extract_cvss(vulnerability)
+        severity = _SEVERITY_MAP.get(severity_raw)
+        derived_severity = severity_from_cvss(cvss_score)
+        if derived_severity and (
+            severity is None
+            or _SEVERITY_RANK.get(derived_severity, 0) > _SEVERITY_RANK.get(severity, 0)
+        ):
+            severity = derived_severity
+        if severity is None:
+            severity = "Medium"
 
         references: List[str] = [OSV_VULN_URL.format(osv_id)] if osv_id else []
         if cve:
@@ -376,17 +406,25 @@ class CVEMatcher:
         for entry in vulnerability.get("severity") or []:
             if not isinstance(entry, dict):
                 continue
-            if str(entry.get("type") or "").upper() not in {"CVSS_V3", "CVSS_V3_1"}:
-                continue
+            severity_type = str(entry.get("type") or "").upper()
             vector = str(entry.get("score") or "").strip()
-            if not vector.startswith("CVSS:3"):
+            if not vector:
                 continue
-            if CVSS3 is not None:
-                try:
-                    return float(CVSS3(vector).scores()[0]), vector
-                except Exception:
-                    return None, vector
-            return None, vector
+
+            calculator = None
+            if severity_type.startswith("CVSS_V4") or vector.startswith("CVSS:4"):
+                calculator = CVSS4
+            elif severity_type.startswith("CVSS_V3") or vector.startswith("CVSS:3"):
+                calculator = CVSS3
+            elif severity_type.startswith("CVSS_V2") or vector.startswith("CVSS:2"):
+                calculator = CVSS2
+            if calculator is None:
+                continue
+            try:
+                return float(calculator(vector).scores()[0]), vector
+            except Exception:
+                # Keep the vector even when the local calculator cannot parse it.
+                return None, vector
         return None, None
 
     # -------------------------------------------------------------- enrichment
@@ -479,6 +517,8 @@ class MoodleCVETester:
         enrich: bool = True,
         validate_cves: bool = False,
         authorized: bool = False,
+        use_msa: bool = True,
+        msa_max_pages: int = 12,
         **_: Any,
     ) -> None:
         self.target_url = target_url
@@ -490,6 +530,8 @@ class MoodleCVETester:
         self.session = session
         self.validate_cves = validate_cves
         self.authorized = authorized
+        self.use_msa = use_msa
+        self.msa_max_pages = max(1, int(msa_max_pages or 12))
         self.version_info: Dict[str, Any] = {}
 
     def set_version_info(self, version_info: Dict[str, Any]) -> None:
@@ -524,7 +566,38 @@ class MoodleCVETester:
             enrich=self.enrich,
         )
         findings = matcher.match(version, self.target_url)
-        if not matcher.data_available:
+
+        msa_findings: List[Dict[str, Any]] = []
+        if self.use_msa:
+            msa = MSAMatcher(
+                logger=self.logger,
+                timeout=self.timeout,
+                cache_dir=self.cache_dir,
+                offline=self.offline,
+                max_pages=self.msa_max_pages,
+            )
+            msa_findings = msa.match(version, self.target_url)
+            if not msa.data_available:
+                info.append(
+                    {
+                        "title": "Fonte MSA indisponível",
+                        "description": (
+                            "Não foi possível obter os Moodle Security Announcements "
+                            "(offline sem cache ou falha de rede). A correspondência "
+                            "por OSV foi mantida, mas pode faltar um CVE ainda Pending."
+                        ),
+                        "severity": "Info",
+                        "verified": True,
+                        "source": "MSA",
+                        "evidence_type": "info",
+                    }
+                )
+            elif msa_findings and self.enrich:
+                matcher._enrich(msa_findings)
+
+        findings = self._merge_osv_and_msa(findings, msa_findings)
+
+        if not matcher.data_available and not msa_findings:
             info.append(
                 {
                     "title": "Fonte de CVEs indisponível",
@@ -540,6 +613,21 @@ class MoodleCVETester:
                 }
             )
             return {"vulnerabilities": [], "info": info}
+        if not matcher.data_available and msa_findings:
+            info.append(
+                {
+                    "title": "OSV indisponível; MSA utilizada",
+                    "description": (
+                        "Não foi possível obter o OSV, mas os Moodle Security "
+                        "Announcements foram consultados. O resultado pode faltar "
+                        "CVEs sem MSA correspondente."
+                    ),
+                    "severity": "Info",
+                    "verified": True,
+                    "source": "OSV",
+                    "evidence_type": "info",
+                }
+            )
 
         if confidence != "high":
             for finding in findings:
@@ -559,7 +647,7 @@ class MoodleCVETester:
                         "method": "manual",
                         "reason": "A validação ativa requer --authorized.",
                     }
-                else:
+                elif finding["validation"].get("status") == "available":
                     finding["validation"] = validate_finding(
                         finding,
                         self.session,
@@ -599,3 +687,62 @@ class MoodleCVETester:
                 }
             )
         return {"vulnerabilities": findings, "info": info}
+
+    @staticmethod
+    def _merge_osv_and_msa(
+        osv_findings: List[Dict[str, Any]],
+        msa_findings: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Merge by CVE/OSV id, preserving MSA references and fixed versions."""
+
+        merged: List[Dict[str, Any]] = list(osv_findings)
+        by_cve: Dict[str, Dict[str, Any]] = {
+            str(item.get("cve") or "").upper(): item
+            for item in merged
+            if item.get("cve")
+        }
+        by_msa: Dict[str, Dict[str, Any]] = {
+            str((item.get("metadata") or {}).get("msa_id") or ""): item
+            for item in merged
+            if (item.get("metadata") or {}).get("msa_id")
+        }
+
+        for finding in msa_findings:
+            cve = str(finding.get("cve") or "").upper()
+            msa_id = str((finding.get("metadata") or {}).get("msa_id") or "")
+            existing = by_cve.get(cve) if cve else by_msa.get(msa_id)
+            if existing is None:
+                merged.append(finding)
+                if cve:
+                    by_cve[cve] = finding
+                if msa_id:
+                    by_msa[msa_id] = finding
+                continue
+
+            existing.setdefault("metadata", {})
+            if msa_id:
+                existing["metadata"]["msa_id"] = msa_id
+            existing["references"] = list(
+                dict.fromkeys(
+                    list(existing.get("references") or [])
+                    + list(finding.get("references") or [])
+                )
+            )[:16]
+            existing["fixed_versions"] = list(
+                dict.fromkeys(
+                    list(existing.get("fixed_versions") or [])
+                    + list(finding.get("fixed_versions") or [])
+                )
+            )
+            if not existing.get("description") or len(str(existing.get("description"))) < 80:
+                existing["description"] = finding.get("description") or existing.get("description")
+            existing["evidence"] = (
+                str(existing.get("evidence") or "")
+                + f" Também listado em {msa_id} (Moodle Security Announcements)."
+            )
+            if _SEVERITY_RANK.get(str(finding.get("severity")), 0) > _SEVERITY_RANK.get(
+                str(existing.get("severity")), 0
+            ):
+                existing["severity"] = finding.get("severity")
+
+        return merged

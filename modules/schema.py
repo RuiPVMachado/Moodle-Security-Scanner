@@ -111,25 +111,54 @@ def calculate_risk_score(
     confidence: str,
     exploitability: str,
     cvss_score: Optional[float] = None,
+    *,
+    epss: Optional[float] = None,
+    kev: bool = False,
+    validation_status: str = "",
+    verified: bool = False,
 ) -> int:
     """Return a 0-100 prioritisation score.
 
-    When a CVSS base score exists it is the most defensible source, so it is
-    used directly (CVSS 9.8 -> 98).  Otherwise a transparent additive score is
-    used and capped at 100.
+    CVSS remains the base when available.  KEV, EPSS, active verification and
+    safe CVE validation then adjust the priority: a confirmed issue outweighs a
+    version-only match, while a safe validator that did not observe the issue
+    reduces it.
     """
 
     if cvss_score is not None:
         try:
-            return max(0, min(100, int(round(float(cvss_score) * 10))))
+            score = float(cvss_score) * 10.0
         except (TypeError, ValueError):
-            pass
-    score = (
-        SEVERITY_SCORE.get(severity, SEVERITY_SCORE["Info"])
-        + CONFIDENCE_SCORE.get(confidence, CONFIDENCE_SCORE["medium"])
-        + EXPLOITABILITY_SCORE.get(exploitability, EXPLOITABILITY_SCORE["medium"])
-    )
-    return min(score, 100)
+            score = float(
+                SEVERITY_SCORE.get(severity, SEVERITY_SCORE["Info"])
+                + CONFIDENCE_SCORE.get(confidence, CONFIDENCE_SCORE["medium"])
+                + EXPLOITABILITY_SCORE.get(exploitability, EXPLOITABILITY_SCORE["medium"])
+            )
+    else:
+        score = float(
+            SEVERITY_SCORE.get(severity, SEVERITY_SCORE["Info"])
+            + CONFIDENCE_SCORE.get(confidence, CONFIDENCE_SCORE["medium"])
+            + EXPLOITABILITY_SCORE.get(exploitability, EXPLOITABILITY_SCORE["medium"])
+        )
+
+    if kev:
+        score = max(score, 85.0)
+        score += 5.0
+    if epss is not None:
+        try:
+            probability = float(epss)
+        except (TypeError, ValueError):
+            probability = 0.0
+        if probability >= 0.10:
+            score += 8.0
+        elif probability >= 0.01:
+            score += 3.0
+    if verified or str(validation_status).lower() == "confirmed":
+        score += 5.0
+    elif str(validation_status).lower() == "not-confirmed":
+        score -= 15.0
+
+    return max(0, min(100, int(round(score))))
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -174,7 +203,24 @@ def normalize_vulnerability(
     source = str(raw.get("source") or module_name)
     confidence = _infer_confidence(raw, source, verified)
     exploitability = _infer_exploitability(raw, severity, verified)
-    risk_score = calculate_risk_score(severity, confidence, exploitability, cvss_score)
+    raw_validation = raw.get("validation")
+    if not isinstance(raw_validation, dict):
+        raw_validation = {}
+    validation_status = str(
+        raw.get("validation_status")
+        or raw_validation.get("status")
+        or ""
+    )
+    risk_score = calculate_risk_score(
+        severity,
+        confidence,
+        exploitability,
+        cvss_score,
+        epss=_as_float(raw.get("epss")),
+        kev=_as_bool(raw.get("kev", False)),
+        validation_status=validation_status,
+        verified=verified,
+    )
 
     references = raw.get("references")
     if not isinstance(references, list):

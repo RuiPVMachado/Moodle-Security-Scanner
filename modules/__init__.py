@@ -5,6 +5,7 @@
 
 from modules.api_tester import MoodleAPITester
 from modules.auth_tester import MoodleAuthTester
+from modules.config_tester import MoodleConfigTester
 from modules.cve_matcher import MoodleCVETester
 from modules.lfi_tester import MoodleLFITester
 from modules.passive import MoodlePassiveTester
@@ -24,6 +25,7 @@ available_modules = {
     "passive": MoodlePassiveTester,
     "auth": MoodleAuthTester,
     "api": MoodleAPITester,
+    "config": MoodleConfigTester,
     "xss": MoodleXSSTester,
     "sqli": MoodleSQLITester,
     "lfi": MoodleLFITester,
@@ -40,6 +42,7 @@ __all__ = [
     "MoodleRCETester",
     "MoodleAuthTester",
     "MoodleAPITester",
+    "MoodleConfigTester",
     "MoodleXSSTester",
     "MoodleLFITester",
     "MoodleSQLITester",

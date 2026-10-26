@@ -20,15 +20,19 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
-from modules.discovery import replace_query_param
+from modules.discovery import discover_crawl_urls, replace_query_param
 from modules.http import SecureSession, build_session
 
 _DISCOVERY_PATHS = (
     "",
+    "my/",
+    "my/courses.php",
     "search/index.php",
     "course/search.php",
     "mod/forum/search.php",
+    "mod/forum/index.php",
     "user/index.php",
+    "user/profile.php",
     "tag/search.php",
     "calendar/view.php",
     "login/forgot_password.php",
@@ -67,12 +71,14 @@ class MoodleXSSTester:
         session: Optional[SecureSession] = None,
         deep: bool = False,
         max_tests: int = 40,
+        crawl_pages: int = 0,
         **_: Any,
     ) -> None:
         self.target_url = target_url.rstrip("/") + "/"
         self.timeout = timeout
         self.deep = deep
         self.max_tests = max(1, max_tests if deep else min(max_tests, 40))
+        self.crawl_pages = max(0, int(crawl_pages or 0))
         self.version_info: Dict[str, Any] = {}
         self.logger = logger or logging.getLogger("MoodleXSSTester")
         self.session = session or build_session(
@@ -121,8 +127,21 @@ class MoodleXSSTester:
         targets: List[Tuple[str, str, str, Dict[str, str]]] = []
         seen = set()
 
-        for path in _DISCOVERY_PATHS:
-            url = self.target_url + path
+        seed_urls = [self.target_url + path for path in _DISCOVERY_PATHS]
+        urls = list(seed_urls)
+        if self.crawl_pages > 0:
+            urls.extend(
+                discover_crawl_urls(
+                    self.session,
+                    self.target_url,
+                    seeds=seed_urls,
+                    max_pages=self.crawl_pages,
+                    timeout=self.timeout,
+                    logger=self.logger,
+                )
+            )
+
+        for url in urls:
             response = self._get(url)
             if response is None or response.status_code != 200:
                 continue
@@ -190,13 +209,18 @@ class MoodleXSSTester:
                 if field_type in {"text", "search", "email", "url", "tel", "textarea"}:
                     if name.lower() not in _SKIP_FIELDS:
                         parameters.append(name)
-            if parameters:
-                yield {
-                    "action": action,
-                    "method": method if method in {"get", "post"} else "get",
-                    "parameters": parameters[:8],
-                    "data": data,
-                }
+            if not parameters:
+                continue
+            if "/login/" in urllib.parse.urlparse(action).path.lower():
+                continue
+            if any(name in data for name in ("password", "logintoken")):
+                continue
+            yield {
+                "action": action,
+                "method": method if method in {"get", "post"} else "get",
+                "parameters": parameters[:8],
+                "data": data,
+            }
 
     def _extract_link_parameters(
         self,

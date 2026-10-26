@@ -76,7 +76,7 @@ def main() -> None:
 
     session = requests.Session()
     session.headers.update(
-        {"User-Agent": "moodle-security-scanner-version-map-builder/2.0"}
+        {"User-Agent": "moodle-security-scanner-version-map-builder/2.1"}
     )
     tags = get_tags(session)
     print(f"Found {len(tags)} stable tags")

@@ -33,7 +33,7 @@ _VERSION_MAP: Optional[Dict[str, Dict[str, str]]] = None
 
 _MOBILE_RE = re.compile(r"download\.moodle\.org/mobile\?version=(\d{8,12})", re.IGNORECASE)
 _MCFG_RE = re.compile(r"M\.cfg\s*=\s*", re.IGNORECASE)
-_RELEASE_RE = re.compile(r"^\d+\.\d+(?:\.\d+)?(?:[+-].*)?$")
+_RELEASE_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)?)(?:\s*[-+(].*)?$")
 
 
 def load_version_map() -> Dict[str, Dict[str, str]]:
@@ -128,8 +128,9 @@ class MoodleVersionDetector:
                 info["is_moodle"] = True
 
                 release = str(cfg.get("release") or cfg.get("version") or "").strip()
-                if release and _RELEASE_RE.match(release):
-                    info["version"] = release.split("+")[0].strip()
+                release_match = _RELEASE_RE.match(release) if release else None
+                if release_match:
+                    info["version"] = release_match.group(1)
                     info["version_source"] = "m_cfg"
                     info["version_confidence"] = "high"
                     info["is_moodle"] = True
@@ -225,7 +226,7 @@ class MoodleVersionDetector:
                 return {
                     "version": match.group(1),
                     "version_source": "meta_generator",
-                    "version_confidence": "high",
+                    "version_confidence": "medium",
                     "is_moodle": True,
                     "version_evidence": content,
                 }
@@ -249,7 +250,7 @@ class MoodleVersionDetector:
                 return {
                     "version": match.group(1),
                     "version_source": "html_comment",
-                    "version_confidence": "medium",
+                    "version_confidence": "low",
                     "is_moodle": True,
                     "version_evidence": text.strip()[:300],
                 }

@@ -16,9 +16,10 @@ without both, the honest output is an inventory entry for manual review.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
-from modules.http import SecureSession, build_session
+from modules.http import SecureSession, build_session, parallel_map
 
 _COMPONENTS = (
     ("mod_forum", "mod/forum/version.php"),
@@ -207,19 +208,39 @@ class MoodlePluginTester:
     def run_tests(self) -> Dict[str, List[Dict[str, Any]]]:
         results: Dict[str, List[Dict[str, Any]]] = {"vulnerabilities": [], "info": []}
         detected: List[str] = []
+        versions: List[str] = []
 
-        for component, path in _COMPONENTS[: self.max_tests]:
+        components = _COMPONENTS[: self.max_tests]
+
+        def probe(item: Tuple[str, str]) -> Optional[Tuple[str, str, Any]]:
+            component, path = item
             url = self.target_url + path
             try:
                 response = self.session.get(url, timeout=self.timeout, allow_redirects=False)
             except Exception:
-                continue
-            if response.status_code != 200:
-                continue
+                return None
+            if response is None or response.status_code != 200:
+                return None
+            return component, url, response
 
+        for item in parallel_map(
+            probe,
+            components,
+            workers=8,
+            logger=self.logger,
+            label="plugin version.php",
+        ):
+            if item is None:
+                continue
+            component, url, response = item
             detected.append(component)
             body = response.text or ""
             source = self._extract_php_source(body)
+            metadata = self._parse_plugin_metadata(source or "")
+            if metadata.get("version") or metadata.get("release"):
+                versions.append(
+                    f"{component} ({metadata.get('release') or metadata.get('version')})"
+                )
             if source:
                 results["vulnerabilities"].append(
                     {
@@ -241,18 +262,25 @@ class MoodlePluginTester:
                         "verified": True,
                         "source": "plugin",
                         "evidence_type": "passive",
+                        "metadata": {
+                            "component": component,
+                            **metadata,
+                        },
                     }
                 )
 
         if detected:
+            description = (
+                f"{len(detected)} componentes encontrados: "
+                + ", ".join(detected[:40])
+                + ". Inventário apenas; não implica vulnerabilidade."
+            )
+            if versions:
+                description += " Versões expostas: " + ", ".join(versions[:20]) + "."
             results["info"].append(
                 {
                     "title": "Componentes Moodle detetados",
-                    "description": (
-                        f"{len(detected)} componentes encontrados: "
-                        + ", ".join(detected[:30])
-                        + ". Inventário apenas; não implica vulnerabilidade."
-                    ),
+                    "description": description,
                     "severity": "Info",
                     "verified": True,
                     "source": "plugin",
@@ -274,6 +302,21 @@ class MoodlePluginTester:
                 }
             )
         return results
+
+    @staticmethod
+    def _parse_plugin_metadata(source: str) -> Dict[str, str]:
+        metadata: Dict[str, str] = {}
+        patterns = {
+            "version": r"\$plugin->version\s*=\s*([0-9]+)",
+            "release": r"\$plugin->release\s*=\s*['\"]([^'\"]+)['\"]",
+            "component": r"\$plugin->component\s*=\s*['\"]([^'\"]+)['\"]",
+            "requires": r"\$plugin->requires\s*=\s*([0-9]+)",
+        }
+        for key, pattern in patterns.items():
+            match = re.search(pattern, source or "")
+            if match:
+                metadata[key] = match.group(1).strip()
+        return metadata
 
     @staticmethod
     def _extract_php_source(body: str) -> Optional[str]:

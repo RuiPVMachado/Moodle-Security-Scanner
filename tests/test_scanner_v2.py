@@ -497,6 +497,7 @@ def test_cve_tester_requires_authorization_for_active_validation(monkeypatch):
         offline=True,
         validate_cves=True,
         authorized=False,
+        use_msa=False,
     )
     tester.set_version_info({"version": "4.4.5", "version_confidence": "high"})
     result = tester.run_tests()

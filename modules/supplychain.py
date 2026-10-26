@@ -73,7 +73,7 @@ class MoodleSupplyChainTester:
         self.osv_session = build_session(
             verify_ssl=True,
             timeout=timeout,
-            user_agent="MoodleSecurityScanner/2.0 (composer audit)",
+            user_agent="MoodleSecurityScanner/2.1 (composer audit)",
         )
 
     def set_version_info(self, version_info: Dict[str, Any]) -> None:

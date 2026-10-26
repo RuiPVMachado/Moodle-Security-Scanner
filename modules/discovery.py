@@ -17,9 +17,13 @@ from bs4 import BeautifulSoup
 
 DEFAULT_DISCOVERY_PATHS = (
     "",
+    "my/",
+    "my/courses.php",
     "course/view.php",
     "course/index.php",
     "user/index.php",
+    "user/profile.php",
+    "mod/forum/index.php",
     "mod/forum/view.php",
     "mod/forum/discuss.php",
     "mod/quiz/view.php",
@@ -97,13 +101,21 @@ def extract_forms(
             elif include_hidden_ids and field_type == "hidden" and name.lower().endswith("id"):
                 parameters.append(name)
 
-        if parameters:
-            yield {
-                "url": action,
-                "method": method,
-                "parameters": parameters[:10],
-                "data": data,
-            }
+        if not parameters:
+            continue
+        # Never send injection payloads to a login/session form.  Those
+        # requests can create failed-login lockouts and are not a valid SQLi
+        # target for an unauthenticated scanner.
+        if "/login/" in urllib.parse.urlparse(action).path.lower():
+            continue
+        if any(name in data for name in ("password", "logintoken")):
+            continue
+        yield {
+            "url": action,
+            "method": method,
+            "parameters": parameters[:10],
+            "data": data,
+        }
 
 
 def extract_link_parameters(
@@ -125,6 +137,132 @@ def extract_link_parameters(
             yield href, parameter
 
 
+_CRAWL_SKIP_PATH_TOKENS = (
+    "logout",
+    "signout",
+    "login",
+    "delete",
+    "remove",
+    "edit",
+    "upload",
+    "import",
+    "export",
+    "restore",
+    "backup",
+    "admin",
+    "webservice",
+    "token",
+    "grade",
+    "enrol",
+    "confirm",
+    "subscribe",
+    "unsubscribe",
+    "post",
+    "reply",
+    "submit",
+    "save",
+    "update",
+)
+_CRAWL_SKIP_QUERY_TOKENS = (
+    "sesskey",
+    "logout",
+    "delete",
+    "remove",
+    "edit",
+    "action=edit",
+    "action=delete",
+    "confirm",
+    "cancel",
+)
+_STATIC_SUFFIXES = (
+    ".css",
+    ".js",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".map",
+)
+
+
+def _safe_crawl_url(url: str, target_url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if _origin(url) != _origin(target_url):
+        return False
+    path = parsed.path.lower()
+    if not path or path.endswith(_STATIC_SUFFIXES):
+        return False
+    if any(token in path for token in _CRAWL_SKIP_PATH_TOKENS):
+        return False
+    query = parsed.query.lower()
+    if any(token in query for token in _CRAWL_SKIP_QUERY_TOKENS):
+        return False
+    return True
+
+
+def _crawl_candidates(html: str, base_url: str, target_url: str) -> Iterable[str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    for link in soup.find_all("a", href=True):
+        href = urllib.parse.urljoin(base_url, link["href"])
+        if _safe_crawl_url(href, target_url):
+            yield href
+
+
+def discover_crawl_urls(
+    session,
+    target_url: str,
+    *,
+    seeds: Sequence[str],
+    max_pages: int = 5,
+    timeout: float = 30.0,
+    logger: Optional[logging.Logger] = None,
+) -> List[str]:
+    """Conservatively walk same-origin links from authenticated pages.
+
+    State-changing links (logout, delete, edit, enrol, backup, etc.) are
+    skipped.  This is used only by active modules after ``--authorized``.
+    """
+
+    if max_pages <= 0:
+        return []
+    queue = list(seeds[:8])
+    seen = set()
+    extra: List[str] = []
+    while queue and len(extra) < max_pages:
+        url = queue.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            response = session.get(url, timeout=timeout)
+        except Exception as exc:
+            if logger:
+                logger.debug("Crawl request failed for %s: %s", url, exc)
+            continue
+        if response.status_code != 200:
+            continue
+        final = (response.url or "").lower()
+        body = (response.text or "").lower()
+        if "/login/" in final and "loginerrors" not in body:
+            continue
+        for candidate in _crawl_candidates(response.text or "", response.url, target_url):
+            if candidate in seen:
+                continue
+            if candidate not in extra:
+                extra.append(candidate)
+            queue.append(candidate)
+            if len(extra) >= max_pages:
+                break
+    return extra
+
+
 def discover_parameter_targets(
     session,
     target_url: str,
@@ -134,12 +272,26 @@ def discover_parameter_targets(
     logger: Optional[logging.Logger] = None,
     include_hidden_ids: bool = False,
     skip_login_walls: bool = True,
+    crawl_pages: int = 0,
 ) -> List[Dict[str, Any]]:
     targets: List[Dict[str, Any]] = []
     seen = set()
 
-    for path in paths:
-        url = target_url.rstrip("/") + "/" + path.lstrip("/")
+    seed_urls = [target_url.rstrip("/") + "/" + path.lstrip("/") for path in paths]
+    urls = list(seed_urls)
+    if crawl_pages > 0:
+        urls.extend(
+            discover_crawl_urls(
+                session,
+                target_url,
+                seeds=seed_urls,
+                max_pages=crawl_pages,
+                timeout=timeout,
+                logger=logger,
+            )
+        )
+
+    for url in urls:
         try:
             response = session.get(url, timeout=timeout)
         except Exception as exc:
