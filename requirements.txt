@@ -11,4 +11,4 @@ cvss==3.6
 pytest==9.0.3
 ruff==0.9.10
 mypy==1.15.0
-python-docx==1.1.2
+python-docx==1.2.0
