@@ -1,37 +1,50 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Modules package for Moodle Security Scanner
-"""
+"""Modules package for Moodle Security Scanner."""
 
-# Import all modules to make them available via modules.*
-from modules.version_detector import MoodleVersionDetector
-from modules.rce_tester import MoodleRCETester
-from modules.auth_tester import MoodleAuthTester
 from modules.api_tester import MoodleAPITester
-from modules.xss_tester import MoodleXSSTester
+from modules.auth_tester import MoodleAuthTester
+from modules.cve_matcher import MoodleCVETester
 from modules.lfi_tester import MoodleLFITester
+from modules.passive import MoodlePassiveTester
+from modules.plugin_tester import MoodlePluginTester
+from modules.rce_tester import MoodleRCETester
+from modules.session_tester import MoodleSessionTester
 from modules.sqli_tester import MoodleSQLITester
+from modules.supplychain import MoodleSupplyChainTester
+from modules.version_detector import MoodleVersionDetector
+from modules.xss_tester import MoodleXSSTester
 
-# Define module availability for dynamic loading
+# Dynamic loading registry.  "version" is always executed first by the
+# orchestrator, even when it is not explicitly selected.
 available_modules = {
     "version": MoodleVersionDetector,
-    "rce": MoodleRCETester,
+    "cve": MoodleCVETester,
+    "passive": MoodlePassiveTester,
     "auth": MoodleAuthTester,
     "api": MoodleAPITester,
     "xss": MoodleXSSTester,
+    "sqli": MoodleSQLITester,
     "lfi": MoodleLFITester,
-    "sqli": MoodleSQLITester
+    "rce": MoodleRCETester,
+    "plugin": MoodlePluginTester,
+    "session": MoodleSessionTester,
+    "supplychain": MoodleSupplyChainTester,
 }
 
 __all__ = [
     "MoodleVersionDetector",
+    "MoodleCVETester",
+    "MoodlePassiveTester",
     "MoodleRCETester",
     "MoodleAuthTester",
     "MoodleAPITester",
     "MoodleXSSTester",
     "MoodleLFITester",
     "MoodleSQLITester",
-    "available_modules"
-] 
+    "MoodlePluginTester",
+    "MoodleSessionTester",
+    "MoodleSupplyChainTester",
+    "available_modules",
+]

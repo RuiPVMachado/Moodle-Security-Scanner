@@ -28,9 +28,12 @@ def build_doc(data: dict[str, Any]) -> Document:
     doc.add_paragraph(f"Scan Date: {scan_info.get('timestamp', 'Unknown')}")
     doc.add_paragraph(f"Scanner Version: {scan_info.get('scanner_version', 'Unknown')}")
     doc.add_paragraph(f"Status: {scan_info.get('status', 'Unknown')}")
+    doc.add_paragraph(f"Moodle Version: {data.get('version_info', {}).get('version', 'Unknown')}")
 
     doc.add_heading("Scan Summary", level=1)
     doc.add_paragraph(f"Total Vulnerabilities Found: {summary.get('total_vulnerabilities', len(vulns))}")
+    doc.add_paragraph(f"Confirmed Findings: {summary.get('verified_findings', 0)}")
+    doc.add_paragraph(f"Version-based Findings: {summary.get('version_based_findings', 0)}")
     doc.add_paragraph(f"Average Risk Score: {summary.get('average_risk_score', 0)}")
     doc.add_paragraph(f"Critical: {summary.get('severity_counts', {}).get('Critical', 0)}")
     doc.add_paragraph(f"High: {summary.get('severity_counts', {}).get('High', 0)}")
@@ -45,6 +48,10 @@ def build_doc(data: dict[str, Any]) -> Document:
 
     doc.add_heading("Safe Validation Note", level=1)
     doc.add_paragraph("This report includes defensive remediation and validation guidance only.")
+    doc.add_paragraph(
+        "Findings marked as version-based are OSV matches for the detected "
+        "release, not proof that the vulnerability was exploited."
+    )
 
     doc.add_heading("Detailed Findings", level=1)
     if not vulns:
@@ -63,9 +70,23 @@ def build_doc(data: dict[str, Any]) -> Document:
             evidence = evidence[:max_evidence_chars] + "\n...[truncated for readability; see JSON report]"
 
         doc.add_paragraph(f"Module: {vuln.get('module', 'unknown')}")
+        doc.add_paragraph(f"Verified: {'yes' if vuln.get('verified') else 'no'}")
+        doc.add_paragraph(f"Source: {vuln.get('source', 'unknown')}")
+        validation = vuln.get("validation") or {}
+        doc.add_paragraph(f"Validation: {validation.get('status', 'n/a')}")
+        doc.add_paragraph(f"Validation reason: {validation.get('reason', 'n/a')}")
+        doc.add_paragraph(f"Evidence Type: {vuln.get('evidence_type', 'unknown')}")
         doc.add_paragraph(f"Confidence: {vuln.get('confidence', 'unknown')}")
         doc.add_paragraph(f"Exploitability: {vuln.get('exploitability', 'unknown')}")
         doc.add_paragraph(f"Risk Score: {vuln.get('risk_score', 'unknown')}")
+        if vuln.get("cvss_score") is not None:
+            doc.add_paragraph(f"CVSS: {vuln.get('cvss_score')}")
+        if vuln.get("epss") is not None:
+            doc.add_paragraph(f"EPSS: {vuln.get('epss')}")
+        if vuln.get("kev"):
+            doc.add_paragraph("CISA KEV: yes")
+        if vuln.get("fixed_versions"):
+            doc.add_paragraph(f"Fixed in: {', '.join(vuln.get('fixed_versions'))}")
         doc.add_paragraph(f"Description: {vuln.get('description', 'No description provided.')}")
         doc.add_paragraph(f"URL: {vuln.get('url', 'N/A')}")
         doc.add_paragraph(f"Evidence: {evidence}")

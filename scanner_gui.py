@@ -10,9 +10,9 @@ import sys
 import threading
 from pathlib import Path
 from queue import Empty, Queue
-from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox
-from tkinter import ttk
+from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from typing import Optional
 
 
 class ScannerGUI:
@@ -25,7 +25,7 @@ class ScannerGUI:
         self.scanner_script = self.project_root / "moodle_scanner.py"
         self.docx_converter_script = self.project_root / "results_to_docx.py"
         self.python_executable = self._resolve_python_executable()
-        self.process: subprocess.Popen[str] | None = None
+        self.process: Optional[subprocess.Popen[str]] = None
         self.output_queue: Queue[str] = Queue()
 
         self.target_var = StringVar()
@@ -44,16 +44,22 @@ class ScannerGUI:
 
         self.verbose_var = BooleanVar(value=False)
         self.no_verify_ssl_var = BooleanVar(value=False)
+        self.authorized_var = BooleanVar(value=False)
         self.report_format_var = StringVar(value="both")
+        self.profile_var = StringVar(value="balanced")
 
         self.module_vars = {
             "version": BooleanVar(value=True),
+            "cve": BooleanVar(value=True),
+            "passive": BooleanVar(value=True),
             "auth": BooleanVar(value=True),
-            "xss": BooleanVar(value=True),
-            "rce": BooleanVar(value=True),
-            "sqli": BooleanVar(value=True),
-            "lfi": BooleanVar(value=True),
             "api": BooleanVar(value=True),
+            "xss": BooleanVar(value=True),
+            "plugin": BooleanVar(value=True),
+            "session": BooleanVar(value=True),
+            "sqli": BooleanVar(value=False),
+            "lfi": BooleanVar(value=False),
+            "rce": BooleanVar(value=False),
         }
 
         self._build_ui()
@@ -116,6 +122,15 @@ class ScannerGUI:
         ttk.Label(form, text="Threads").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(form, textvariable=self.threads_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
 
+        ttk.Label(form, text="Profile").grid(row=4, column=2, sticky="w", padx=(12, 8), pady=4)
+        ttk.Combobox(
+            form,
+            textvariable=self.profile_var,
+            values=["fast", "balanced", "deep", "external", "all"],
+            state="readonly",
+            width=12,
+        ).grid(row=4, column=3, sticky="w", pady=4)
+
         ttk.Label(form, text="User-Agent").grid(row=5, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(form, textvariable=self.user_agent_var, width=80).grid(
             row=5, column=1, columnspan=3, sticky="ew", pady=4
@@ -129,7 +144,7 @@ class ScannerGUI:
                 modules_frame,
                 text=module_name,
                 variable=self.module_vars[module_name],
-            ).grid(row=0, column=index, padx=8, sticky="w")
+            ).grid(row=index // 6, column=index % 6, padx=8, pady=2, sticky="w")
 
         flags_frame = ttk.Frame(root_frame)
         flags_frame.pack(fill="x", pady=(10, 0))
@@ -138,6 +153,11 @@ class ScannerGUI:
             flags_frame,
             text="Disable SSL verification",
             variable=self.no_verify_ssl_var,
+        ).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(
+            flags_frame,
+            text="I have authorization for active tests",
+            variable=self.authorized_var,
         ).pack(side="left")
 
         buttons = ttk.Frame(root_frame)
@@ -217,6 +237,8 @@ class ScannerGUI:
             self.delay_var.get().strip() or "0",
             "--threads",
             self.threads_var.get().strip() or "5",
+            "--profile",
+            self.profile_var.get().strip() or "balanced",
             "--user-agent",
             self.user_agent_var.get().strip(),
             "-o",
@@ -236,6 +258,9 @@ class ScannerGUI:
 
         if self.no_verify_ssl_var.get():
             cmd.append("--no-verify-ssl")
+
+        if self.authorized_var.get():
+            cmd.append("--authorized")
 
         return cmd, report_format, json_path, docx_path
 

@@ -1,512 +1,318 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Module for detecting Moodle version information
-Part of the Moodle Security Scanner project
+"""Moodle version detection with evidence and confidence levels.
+
+The old detector guessed versions from logo file sizes and from arbitrary
+words on the page.  That produced confident but wrong answers.  This version
+only trusts sources that are tied to the Moodle codebase:
+
+* ``M.cfg.wwwroot`` (reliable base URL, also fixes target normalisation)
+* the mobile-app link ``download.moodle.org/mobile?version=YYYYMMDDNN``
+* ``M.cfg.release`` / a generator meta tag (when present)
+* ``lib/upgrade.txt`` (branch only; it is frozen at 4.4 for Moodle 4.5+)
+
+Exact releases are mapped through ``data/moodle_version_map.json`` generated
+from the official Moodle git tags.
 """
 
-import re
-import requests
+from __future__ import annotations
+
+import json
 import logging
-import time
-from typing import Dict, Optional, Any, List
-from bs4 import BeautifulSoup
+import re
+from pathlib import Path
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
+
+from bs4 import BeautifulSoup, Comment
+
+from modules.http import SecureSession, build_session
+
+_VERSION_MAP: Optional[Dict[str, Dict[str, str]]] = None
+
+_MOBILE_RE = re.compile(r"download\.moodle\.org/mobile\?version=(\d{8,12})", re.IGNORECASE)
+_MCFG_RE = re.compile(r"M\.cfg\s*=\s*", re.IGNORECASE)
+_RELEASE_RE = re.compile(r"^\d+\.\d+(?:\.\d+)?(?:[+-].*)?$")
+
+
+def load_version_map() -> Dict[str, Dict[str, str]]:
+    global _VERSION_MAP
+    if _VERSION_MAP is None:
+        path = Path(__file__).resolve().parent.parent / "data" / "moodle_version_map.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            _VERSION_MAP = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            _VERSION_MAP = {}
+    return _VERSION_MAP
+
+
+def extract_m_cfg(html: str) -> Dict[str, Any]:
+    """Return the ``M.cfg`` object embedded in a Moodle page, if present."""
+
+    match = _MCFG_RE.search(html or "")
+    if not match:
+        return {}
+    start = html.find("{", match.end())
+    if start < 0:
+        return {}
+    try:
+        value, _ = json.JSONDecoder().raw_decode(html[start:])
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
 
 class MoodleVersionDetector:
-    """Class for detecting Moodle version information"""
-    
+    """Detect the Moodle release and the real web root of an installation."""
+
     def __init__(
-        self, 
-        target_url: str, 
-        logger: Optional[logging.Logger] = None, 
-        timeout: int = 30, 
-        proxy: Optional[str] = None, 
-        cookies: Optional[Dict[str, str]] = None, 
+        self,
+        target_url: str,
+        logger: Optional[logging.Logger] = None,
+        timeout: float = 30,
+        proxy: Optional[str] = None,
+        cookies: Optional[Dict[str, str]] = None,
         delay: float = 0,
         user_agent: Optional[str] = None,
-        verify_ssl: bool = True
-    ):
-        """Initialize the Moodle version detector
-        
-        Args:
-            target_url: Target Moodle URL
-            logger: Logger instance
-            timeout: Request timeout in seconds
-            proxy: Proxy URL
-            cookies: Dictionary of cookies
-            delay: Delay between requests in seconds
-            user_agent: User agent string to use
-            verify_ssl: Whether to verify SSL certificates
-        """
-        self.target_url = target_url.rstrip('/')
+        verify_ssl: bool = True,
+        session: Optional[SecureSession] = None,
+        max_response_bytes: int = 2_000_000,
+    ) -> None:
+        self.target_url = (target_url or "").strip()
         self.timeout = timeout
         self.proxy = proxy
         self.cookies = cookies or {}
         self.delay = delay
         self.user_agent = user_agent
         self.verify_ssl = verify_ssl
-        
-        # Set up logging
+        self.max_response_bytes = max_response_bytes
+        self.version_map = load_version_map()
+
         if logger:
             self.logger = logger
         else:
             self.logger = logging.getLogger("MoodleVersionDetector")
-            self.logger.setLevel(logging.INFO)
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-        
-        # Initialize HTTP session
-        self.session = requests.Session()
-        
-        # Configure the session
-        if proxy:
-            self.session.proxies = {"http": proxy, "https": proxy}
-        
-        if cookies:
-            self.session.cookies.update(cookies)
-            
-        # Set a secure default user agent if none provided
-        if user_agent:
-            self.session.headers.update({"User-Agent": user_agent})
+            if not self.logger.handlers:
+                self.logger.setLevel(logging.INFO)
+                handler = logging.StreamHandler()
+                handler.setFormatter(
+                    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                )
+                self.logger.addHandler(handler)
+
+        self.session = session or build_session(
+            verify_ssl=verify_ssl,
+            timeout=timeout,
+            user_agent=user_agent,
+            proxy=proxy,
+            cookies=cookies,
+            max_response_bytes=max_response_bytes,
+        )
+
+    def detect_version(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {}
+        homepage = self._get(self.target_url)
+        html = homepage.text if homepage is not None else ""
+
+        if homepage is not None:
+            cfg = extract_m_cfg(html)
+            if cfg:
+                wwwroot = str(cfg.get("wwwroot") or "").strip()
+                if wwwroot.startswith(("http://", "https://")):
+                    info["wwwroot"] = wwwroot.rstrip("/") + "/"
+                for key in ("theme", "jsrev", "langrev", "themerev"):
+                    if cfg.get(key) not in (None, ""):
+                        info[key] = cfg[key]
+                info["is_moodle"] = True
+
+                release = str(cfg.get("release") or cfg.get("version") or "").strip()
+                if release and _RELEASE_RE.match(release):
+                    info["version"] = release.split("+")[0].strip()
+                    info["version_source"] = "m_cfg"
+                    info["version_confidence"] = "high"
+                    info["is_moodle"] = True
+
+            if "version" not in info:
+                mobile = _MOBILE_RE.search(html)
+                if mobile:
+                    numeric = mobile.group(1)
+                    info["numeric_version"] = numeric
+                    mapped = self.version_map.get(numeric)
+                    if mapped:
+                        info["version"] = mapped.get("release")
+                        info["branch"] = mapped.get("branch")
+                        info["version_source"] = "mobile_link"
+                        info["version_confidence"] = "high"
+                        info["version_evidence"] = (
+                            "O link oficial da app móvel contém o valor numérico "
+                            f"$CFG->version = {numeric}, mapeado para "
+                            f"Moodle {mapped.get('release')} ({mapped.get('tag')})."
+                        )
+                        info["is_moodle"] = True
+                    else:
+                        info["version_source"] = "mobile_link"
+                        info["version_confidence"] = "low"
+                        info["version_evidence"] = (
+                            "Foi encontrado o valor numérico de versão "
+                            f"{numeric}, mas ele não está no mapa offline de releases."
+                        )
+                        info["is_moodle"] = True
+
+            if "version" not in info:
+                meta_version = self._detect_from_meta(html)
+                if meta_version:
+                    info.update(meta_version)
+
+            if "version" not in info:
+                comment_version = self._detect_from_comments(html)
+                if comment_version:
+                    info.update(comment_version)
+
+        # Rebase all subsequent requests on the authentic Moodle root.
+        base = (info.get("wwwroot") or self.target_url).rstrip("/")
+        self.target_url = base + "/"
+
+        if "version" not in info and "version_branch" not in info:
+            upgrade = self._detect_from_upgrade_file()
+            if upgrade:
+                info.update(upgrade)
+
+        if not info.get("is_moodle"):
+            info["is_moodle"] = self._looks_like_moodle(html)
+
+        if info.get("version"):
+            self.logger.info(
+                "Moodle %s detetado (%s, confiança %s)",
+                info["version"],
+                info.get("version_source", "unknown"),
+                info.get("version_confidence", "unknown"),
+            )
+        elif info.get("version_branch"):
+            self.logger.info(
+                "Branch Moodle %s detetada; a versão exata não foi exposta.",
+                info["version_branch"],
+            )
         else:
-            self.session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            })
-            
-        # Add security-related headers
-        self.session.headers.update({
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Cache-Control": "max-age=0"
-        })
-    
-    def detect_version(self):
-        """
-        Detect the Moodle version of the target
-        Returns a dictionary with version information
-        """
-        self.logger.info("Detecting Moodle version...")
-        
-        # Combine results from multiple detection methods
-        version_info = {}
-        
-        # Method 1: Check HTML source for version
-        html_version = self._detect_from_html()
-        if html_version:
-            version_info.update(html_version)
-        
-        # Method 2: Check pix/moodlelogo.png file
-        if self.delay > 0:
-            time.sleep(self.delay)
-        
-        logo_version = self._detect_from_logo()
-        if logo_version:
-            version_info.update(logo_version)
-        
-        # Method 3: Check via lib/upgrade.txt file
-        if self.delay > 0:
-            time.sleep(self.delay)
-        
-        upgrade_version = self._detect_from_upgrade_file()
-        if upgrade_version:
-            version_info.update(upgrade_version)
-        
-        # Method 4: Check version explicitly from admin/tool/installaddon/index.php
-        if self.delay > 0:
-            time.sleep(self.delay)
-        
-        admin_version = self._detect_from_admin_pages()
-        if admin_version:
-            version_info.update(admin_version)
-        
-        # Method 5: Check JavaScript files for version info
-        if self.delay > 0:
-            time.sleep(self.delay)
-        
-        js_version = self._detect_from_js_files()
-        if js_version:
-            version_info.update(js_version)
-        
-        # Determine the most reliable version from the collected data
-        if "version" not in version_info and "version_candidates" in version_info:
-            # If we have candidates but no confirmed version, use the most common one
-            candidates = version_info["version_candidates"]
-            if candidates:
-                most_common = max(set(candidates), key=candidates.count)
-                version_info["version"] = most_common
-                version_info["version_confidence"] = "medium"
-        
-        if version_info:
-            self.logger.info(f"Detected Moodle version information: {version_info}")
-        else:
-            self.logger.warning("Could not detect Moodle version")
-        
-        return version_info
-    
-    def _detect_from_html(self):
-        """
-        Detect version from HTML source code
-        Returns a dictionary with version information
-        """
-        self.logger.debug("Attempting to detect version from HTML source...")
-        
-        version_info = {}
-        version_candidates = []
-        
+            self.logger.warning("Não foi possível determinar a versão exata do Moodle.")
+
+        return info
+
+    def _get(self, url: str):
         try:
-            # Send a request to the homepage
-            response = self.session.get(self.target_url, timeout=self.timeout)
-            
-            if response.status_code != 200:
-                self.logger.debug(f"Failed to get homepage, status code: {response.status_code}")
-                return None
-            
-            # Check for direct version comments in HTML source
-            html_source = response.text
-            
-            # Pattern 1: Look for version in HTML comments
-            version_comment_pattern = r'<!-- Moodle version.*?(\d+\.\d+(?:\.\d+)*).*?-->'
-            version_matches = re.findall(version_comment_pattern, html_source, re.IGNORECASE)
-            if version_matches:
-                version = version_matches[0]
-                version_info["version"] = version
-                version_info["version_source"] = "html_comment"
-                version_info["version_confidence"] = "high"
-                return version_info
-            
-            # Pattern 2: Look for "Moodle" followed by version number anywhere in the HTML
-            version_pattern = r'moodle\s*(?:version|release)?\s*:?\s*(\d+\.\d+(?:\.\d+)*)'
-            version_matches = re.findall(version_pattern, html_source, re.IGNORECASE)
-            if version_matches:
-                for match in version_matches:
-                    version_candidates.append(match)
-            
-            # Pattern 3: Look for script tags with moodle versions
-            soup = BeautifulSoup(html_source, 'html.parser')
-            for script in soup.find_all('script'):
-                if script.string:
-                    version_matches = re.findall(r'(?:M\.cfg\.version|cfg\.version)\s*=\s*[\'"](\d+\.\d+(?:\.\d+)*)[\'"]', script.string)
-                    if version_matches:
-                        for match in version_matches:
-                            version_candidates.append(match)
-            
-            # Pattern 4: Check if meta tags contain version info
-            for meta in soup.find_all('meta'):
-                if meta.get('name') and 'generator' in meta.get('name').lower():
-                    content = meta.get('content', '')
-                    if 'moodle' in content.lower():
-                        version_matches = re.findall(r'(\d+\.\d+(?:\.\d+)*)', content)
-                        if version_matches:
-                            version = version_matches[0]
-                            version_info["version"] = version
-                            version_info["version_source"] = "meta_generator"
-                            version_info["version_confidence"] = "high"
-                            return version_info
-            
-            # Pattern 5: Look for doctype which sometimes includes version
-            doctype = soup.select_one('!doctype')
-            if doctype:
-                doctype_text = str(doctype)
-                version_matches = re.findall(r'moodle\s+(\d+\.\d+(?:\.\d+)*)', doctype_text, re.IGNORECASE)
-                if version_matches:
-                    version = version_matches[0]
-                    version_info["version"] = version
-                    version_info["version_source"] = "doctype"
-                    version_info["version_confidence"] = "medium"
-                    return version_info
-            
-            # If we found candidates but no definitive version, store them
-            if version_candidates:
-                version_info["version_candidates"] = version_candidates
-                version_info["version_source"] = "html_pattern"
-                version_info["version_confidence"] = "low"
-            
-            # Check if this is definitely Moodle
-            is_moodle = False
-            if 'moodle' in html_source.lower():
-                is_moodle = True
-            
-            # Check for Moodle-specific elements
-            moodle_elements = [
-                'login/index.php',
-                'moodle-core',
-                'course/view.php',
-                'theme/boost',
-                'theme/classic',
-                'mod/forum',
-                'mod/resource'
-            ]
-            
-            for element in moodle_elements:
-                if element in html_source:
-                    is_moodle = True
-                    break
-            
-            if is_moodle:
-                version_info["is_moodle"] = True
-            
-            return version_info
-            
-        except Exception as e:
-            self.logger.debug(f"Error detecting version from HTML: {str(e)}")
+            return self.session.get(url, timeout=self.timeout)
+        except Exception as exc:  # requests errors are already handled by the session
+            self.logger.debug("Erro ao pedir %s: %s", url, exc)
             return None
-    
-    def _detect_from_logo(self):
-        """
-        Detect version from Moodle logo properties
-        Returns a dictionary with version information
-        """
-        self.logger.debug("Attempting to detect version from Moodle logo...")
-        
-        version_info = {}
-        
-        # Common Moodle logo paths for different versions
-        logo_paths = [
-            "/pix/moodlelogo.png",
-            "/pix/moodlelogo.gif",
-            "/pix/moodlelogo.jpg",
-            "/theme/boost/pix/moodlelogo.png",
-            "/theme/classic/pix/moodlelogo.png"
-        ]
-        
+
+    def _detect_from_meta(self, html: str) -> Dict[str, Any]:
+        if not html:
+            return {}
         try:
-            for logo_path in logo_paths:
-                logo_url = self.target_url + logo_path
-                
-                try:
-                    response = self.session.head(logo_url, timeout=self.timeout)
-                    
-                    # If the logo exists, we can check properties
-                    if response.status_code == 200:
-                        # Get the logo file for analysis
-                        response = self.session.get(logo_url, timeout=self.timeout)
-                        
-                        # Check the logo file size
-                        file_size = len(response.content)
-                        
-                        # Map logo sizes to versions (approximate)
-                        # These are rough estimates and may change with different installations
-                        version_by_size = {
-                            2508: "3.9.x",
-                            1754: "3.5.x - 3.8.x",
-                            1237: "3.0.x - 3.4.x",
-                            1262: "2.5.x - 2.9.x",
-                            945: "2.0.x - 2.4.x"
-                        }
-                        
-                        # Find the closest size match
-                        closest_size = min(version_by_size.keys(), key=lambda x: abs(x - file_size))
-                        
-                        # If the size is close enough to a known size
-                        if abs(closest_size - file_size) < 100:
-                            version_range = version_by_size[closest_size]
-                            
-                            # If we haven't found a more specific version already
-                            if "version" not in version_info or version_info.get("version_confidence", "") != "high":
-                                version_info["version_range"] = version_range
-                                version_info["version_source"] = "logo_size"
-                                version_info["version_confidence"] = "medium"
-                                version_info["is_moodle"] = True
-                        
-                        # We found a logo, so this is likely Moodle
-                        version_info["is_moodle"] = True
-                        break
-                
-                except Exception as e:
-                    self.logger.debug(f"Error checking logo at {logo_url}: {str(e)}")
-                    continue
-            
-            return version_info
-            
-        except Exception as e:
-            self.logger.debug(f"Error detecting version from logo: {str(e)}")
-            return None
-    
-    def _detect_from_upgrade_file(self):
-        """
-        Detect version from upgrade.txt file
-        Returns a dictionary with version information
-        """
-        self.logger.debug("Attempting to detect version from upgrade.txt file...")
-        
-        version_info = {}
-        
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            return {}
+        for meta in soup.find_all("meta"):
+            name = str(meta.get("name") or "").lower()
+            if "generator" not in name:
+                continue
+            content = str(meta.get("content") or "")
+            if "moodle" not in content.lower():
+                continue
+            match = re.search(r"(\d+\.\d+(?:\.\d+)?)", content)
+            if match:
+                return {
+                    "version": match.group(1),
+                    "version_source": "meta_generator",
+                    "version_confidence": "high",
+                    "is_moodle": True,
+                    "version_evidence": content,
+                }
+        return {}
+
+    def _detect_from_comments(self, html: str) -> Dict[str, Any]:
+        if not html:
+            return {}
         try:
-            # Try to access the upgrade.txt file
-            upgrade_url = self.target_url + "/lib/upgrade.txt"
-            
-            response = self.session.get(upgrade_url, timeout=self.timeout)
-            
-            # If the file exists, we can parse it for version info
-            if response.status_code == 200:
-                content = response.text
-                
-                # Look for version headers in the upgrade.txt file
-                version_pattern = r'=+ (\d+\.\d+(?:\.\d+)*(?: ?(?:dev|beta|alpha|rc)\d*)?) =+'
-                version_matches = re.findall(version_pattern, content)
-                
-                if version_matches:
-                    # The latest version is typically at the top
-                    latest_version = version_matches[0]
-                    
-                    version_info["version"] = latest_version
-                    version_info["version_source"] = "upgrade_txt"
-                    version_info["version_confidence"] = "high"
-                    version_info["is_moodle"] = True
-                
-                # Even if we didn't find a version, if the file exists, it's likely Moodle
-                version_info["is_moodle"] = True
-            
-            return version_info
-            
-        except Exception as e:
-            self.logger.debug(f"Error detecting version from upgrade.txt: {str(e)}")
-            return None
-    
-    def _detect_from_admin_pages(self):
-        """
-        Detect version from admin pages
-        Returns a dictionary with version information
-        """
-        self.logger.debug("Attempting to detect version from admin pages...")
-        
-        version_info = {}
-        
-        # Common admin pages that might reveal version info
-        admin_paths = [
-            "/admin/index.php",
-            "/admin/environment.php",
-            "/admin/tool/installaddon/index.php",
-            "/admin/tool/task/scheduledtasks.php",
-            "/admin/settings.php",
-            "/admin/tool/customlang/index.php",
-            "/login/forgot_password.php"  # Sometimes reveals version in error messages
-        ]
-        
-        try:
-            for admin_path in admin_paths:
-                admin_url = self.target_url + admin_path
-                
-                try:
-                    response = self.session.get(admin_url, timeout=self.timeout)
-                    
-                    # If the page exists, check for version info
-                    if response.status_code == 200:
-                        content = response.text
-                        
-                        # Pattern 1: Direct version display
-                        version_pattern = r'(?:Moodle|Version)\s+(?:version|release)?\s*:?\s*(\d+\.\d+(?:\.\d+)*(?:\s*(?:dev|beta|alpha|rc)\d*)?)'
-                        version_matches = re.findall(version_pattern, content, re.IGNORECASE)
-                        
-                        if version_matches:
-                            version = version_matches[0]
-                            
-                            version_info["version"] = version
-                            version_info["version_source"] = "admin_page"
-                            version_info["version_confidence"] = "high"
-                            version_info["is_moodle"] = True
-                            
-                            # Found a definitive version, no need to check other pages
-                            return version_info
-                        
-                        # Pattern 2: Check for release info in page source
-                        soup = BeautifulSoup(content, 'html.parser')
-                        release_info = soup.find(string=re.compile(r'Release\s*:?\s*\d+\.\d+'))
-                        
-                        if release_info:
-                            version_match = re.search(r'(\d+\.\d+(?:\.\d+)*)', release_info)
-                            if version_match:
-                                version = version_match.group(1)
-                                
-                                version_info["version"] = version
-                                version_info["version_source"] = "release_info"
-                                version_info["version_confidence"] = "high"
-                                version_info["is_moodle"] = True
-                                
-                                # Found a definitive version, no need to check other pages
-                                return version_info
-                
-                except Exception as e:
-                    self.logger.debug(f"Error checking admin page {admin_url}: {str(e)}")
-                    continue
-            
-            return version_info
-            
-        except Exception as e:
-            self.logger.debug(f"Error detecting version from admin pages: {str(e)}")
-            return None
-    
-    def _detect_from_js_files(self):
-        """
-        Detect version from JavaScript files
-        Returns a dictionary with version information
-        """
-        self.logger.debug("Attempting to detect version from JavaScript files...")
-        
-        version_info = {}
-        version_candidates = []
-        
-        # Common JavaScript files that might contain version info
-        js_paths = [
-            "/lib/javascript.php",
-            "/lib/requirejs.php",
-            "/lib/amd/build/first.min.js",
-            "/theme/boost/amd/build/index.min.js",
-            "/lib/templates/mustache_helper.js"
-        ]
-        
-        try:
-            for js_path in js_paths:
-                js_url = self.target_url + js_path
-                
-                try:
-                    response = self.session.get(js_url, timeout=self.timeout)
-                    
-                    # If the file exists, check for version info
-                    if response.status_code == 200:
-                        content = response.text
-                        
-                        # Pattern 1: Look for version in JavaScript variable assignments
-                        version_pattern = r'[\'"]?(?:version|release)[\'"]?\s*[:=]\s*[\'"](\d+\.\d+(?:\.\d+)*(?:\s*(?:dev|beta|alpha|rc)\d*)?)[\'"]'
-                        version_matches = re.findall(version_pattern, content, re.IGNORECASE)
-                        
-                        if version_matches:
-                            for match in version_matches:
-                                version_candidates.append(match)
-                        
-                        # Pattern 2: Look for moodle config with version
-                        config_pattern = r'M\.cfg\.version\s*=\s*[\'"](\d+\.\d+(?:\.\d+)*)[\'"]'
-                        config_matches = re.findall(config_pattern, content)
-                        
-                        if config_matches:
-                            version = config_matches[0]
-                            
-                            version_info["version"] = version
-                            version_info["version_source"] = "js_config"
-                            version_info["version_confidence"] = "high"
-                            version_info["is_moodle"] = True
-                            
-                            # Found a definitive version, no need to check other files
-                            return version_info
-                
-                except Exception as e:
-                    self.logger.debug(f"Error checking JS file {js_url}: {str(e)}")
-                    continue
-            
-            # If we found candidates but no definitive version, store them
-            if version_candidates:
-                version_info["version_candidates"] = version_candidates
-                version_info["version_source"] = "js_files"
-                version_info["version_confidence"] = "medium"
-            
-            return version_info
-            
-        except Exception as e:
-            self.logger.debug(f"Error detecting version from JS files: {str(e)}")
-            return None 
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            return {}
+        for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
+            text = str(comment)
+            if "moodle" not in text.lower():
+                continue
+            match = re.search(
+                r"(?:version|release)\s*:?\s*(\d+\.\d+(?:\.\d+)?)", text, re.IGNORECASE
+            )
+            if match:
+                return {
+                    "version": match.group(1),
+                    "version_source": "html_comment",
+                    "version_confidence": "medium",
+                    "is_moodle": True,
+                    "version_evidence": text.strip()[:300],
+                }
+        return {}
+
+    def _detect_from_upgrade_file(self) -> Dict[str, Any]:
+        url = self.target_url + "lib/upgrade.txt"
+        response = self._get(url)
+        if response is None or response.status_code != 200:
+            return {}
+        text = response.text or ""
+
+        # Moodle 4.5+ froze this file and moved notes to UPGRADING.md.
+        if "4.5 Onwards" in text[:2000] or "UPGRADING.md" in text[:2000]:
+            return {
+                "version_branch": "4.5+",
+                "version_source": "upgrade_txt",
+                "version_confidence": "low",
+                "is_moodle": True,
+                "version_evidence": (
+                    "lib/upgrade.txt contém o marcador '4.5 Onwards'; "
+                    "a versão exata não é revelada por este ficheiro."
+                ),
+            }
+
+        headings = re.findall(r"^=+\s*(\d+\.\d+(?:\.\d+)?)\s*=+", text, re.MULTILINE)
+        if not headings:
+            return {}
+        # upgrade.txt lists developer branch sections; it does not prove the
+        # installed patch. Never turn its first heading into an exact version.
+        branch = ".".join(headings[0].split(".")[:2])
+        return {
+            "version_branch": branch,
+            "version_source": "upgrade_txt",
+            "version_confidence": "low",
+            "is_moodle": True,
+            "version_evidence": (
+                f"lib/upgrade.txt indica a branch {branch}, mas não o patch exato."
+            ),
+        }
+
+    def _looks_like_moodle(self, html: str) -> bool:
+        if extract_m_cfg(html):
+            return True
+        lowered = (html or "").lower()
+        signals = (
+            "login/index.php",
+            "theme/boost",
+            "theme/classic",
+            "moodle-core",
+            "moodle.org",
+        )
+        return "moodle" in lowered and any(signal in lowered for signal in signals)
+
+
+def normalize_moodle_base_url(url: str) -> str:
+    """Best-effort normalisation used before the real wwwroot is known."""
+
+    parsed = urlparse(url.strip())
+    if not parsed.scheme:
+        return "https://" + url.strip().rstrip("/") + "/"
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path or "/"
+    if path.endswith("/"):
+        return base + path
+    return base + path + "/"

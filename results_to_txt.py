@@ -28,10 +28,13 @@ def render_report(data: dict[str, Any]) -> str:
         f"Scan Date: {scan_info.get('timestamp', 'Unknown')}",
         f"Scanner Version: {scan_info.get('scanner_version', 'Unknown')}",
         f"Status: {scan_info.get('status', 'Unknown')}",
+        f"Moodle Version: {data.get('version_info', {}).get('version', 'Unknown')}",
         "",
         "SCAN SUMMARY",
         "-" * 80,
         f"Total Vulnerabilities Found: {summary.get('total_vulnerabilities', len(vulns))}",
+        f"Confirmed Findings: {summary.get('verified_findings', 0)}",
+        f"Version-based Findings: {summary.get('version_based_findings', 0)}",
         f"Average Risk Score: {summary.get('average_risk_score', 0)}",
         f"Critical: {summary.get('severity_counts', {}).get('Critical', 0)}",
         f"High: {summary.get('severity_counts', {}).get('High', 0)}",
@@ -67,6 +70,11 @@ def render_report(data: dict[str, Any]) -> str:
                 f"{index}. [{vuln.get('severity', 'Unknown')}] {vuln.get('title', 'Unknown vulnerability')}",
                 "-" * 80,
                 f"Module: {vuln.get('module', 'unknown')}",
+                f"Verified: {'yes' if vuln.get('verified') else 'no'}",
+                f"Source: {vuln.get('source', 'unknown')}",
+                f"Validation: {(vuln.get('validation') or {}).get('status', 'n/a')}",
+                f"Validation reason: {(vuln.get('validation') or {}).get('reason', 'n/a')}",
+                f"Evidence Type: {vuln.get('evidence_type', 'unknown')}",
                 f"Confidence: {vuln.get('confidence', 'unknown')}",
                 f"Exploitability: {vuln.get('exploitability', 'unknown')}",
                 f"Risk Score: {vuln.get('risk_score', 'unknown')}",
@@ -75,6 +83,15 @@ def render_report(data: dict[str, Any]) -> str:
                 f"Evidence: {evidence}",
             ]
         )
+
+        if vuln.get("cvss_score") is not None:
+            lines.append(f"CVSS: {vuln.get('cvss_score')}")
+        if vuln.get("epss") is not None:
+            lines.append(f"EPSS: {vuln.get('epss')}")
+        if vuln.get("kev"):
+            lines.append("CISA KEV: yes")
+        if vuln.get("fixed_versions"):
+            lines.append(f"Fixed in: {', '.join(vuln.get('fixed_versions'))}")
 
         if vuln.get("payload"):
             lines.append("Payload Details: omitted in manager report")
@@ -105,6 +122,14 @@ def render_report(data: dict[str, Any]) -> str:
             ]
         )
 
+    lines.extend(
+        [
+            "NOTE",
+            "-" * 80,
+            "Version-based findings are OSV matches for the detected release, "
+            "not proof that the vulnerability was exploited.",
+        ]
+    )
     return "\n".join(lines)
 
 

@@ -7,6 +7,10 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,7 +18,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
@@ -22,10 +26,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Lint
-        run: ruff check moodle_scanner.py moodle_security_scanner.py modules/schema.py tests
+        run: ruff check .
 
       - name: Type check
-        run: mypy modules/schema.py tests/test_scanner_core.py
+        run: mypy modules moodle_scanner.py
 
       - name: Tests
         env:

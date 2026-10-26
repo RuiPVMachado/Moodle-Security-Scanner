@@ -1,272 +1,288 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Module for testing Moodle Plugin security
-Part of the Moodle Security Scanner project
+"""Plugin/component inventory without fabricated CVE claims.
+
+A plugin name alone is not a vulnerability, and a Moodle version is not the
+plugin version.  This module only reports what it can prove:
+
+* the component exists (its ``version.php`` is reachable), and
+* whether that file exposes its PHP source/version to the web.
+
+Plugin CVE claims require the plugin version and a plugin advisory database;
+without both, the honest output is an inventory entry for manual review.
 """
 
-import re
-import requests
+from __future__ import annotations
+
 import logging
-import time
-from bs4 import BeautifulSoup
-import json
-import os
+from typing import Any, Dict, List, Optional
+
+from modules.http import SecureSession, build_session
+
+_COMPONENTS = (
+    ("mod_forum", "mod/forum/version.php"),
+    ("mod_book", "mod/book/version.php"),
+    ("mod_data", "mod/data/version.php"),
+    ("mod_quiz", "mod/quiz/version.php"),
+    ("mod_scorm", "mod/scorm/version.php"),
+    ("mod_wiki", "mod/wiki/version.php"),
+    ("mod_workshop", "mod/workshop/version.php"),
+    ("mod_choice", "mod/choice/version.php"),
+    ("mod_feedback", "mod/feedback/version.php"),
+    ("mod_lti", "mod/lti/version.php"),
+    ("mod_assign", "mod/assign/version.php"),
+    ("mod_lesson", "mod/lesson/version.php"),
+    ("mod_glossary", "mod/glossary/version.php"),
+    ("mod_h5pactivity", "mod/h5pactivity/version.php"),
+    ("mod_attendance", "mod/attendance/version.php"),
+    ("mod_customcert", "mod/customcert/version.php"),
+    ("mod_certificate", "mod/certificate/version.php"),
+    ("mod_questionnaire", "mod/questionnaire/version.php"),
+    ("block_rss_client", "blocks/rss_client/version.php"),
+    ("block_html", "blocks/html/version.php"),
+    ("block_navigation", "blocks/navigation/version.php"),
+    ("block_calendar_month", "blocks/calendar_month/version.php"),
+    ("filter_multilang", "filter/multilang/version.php"),
+    ("filter_mathjaxloader", "filter/mathjaxloader/version.php"),
+    ("filter_tex", "filter/tex/version.php"),
+    ("auth_oauth2", "auth/oauth2/version.php"),
+    ("auth_ldap", "auth/ldap/version.php"),
+    ("auth_shibboleth", "auth/shibboleth/version.php"),
+    ("enrol_manual", "enrol/manual/version.php"),
+    ("enrol_self", "enrol/self/version.php"),
+    ("enrol_lti", "enrol/lti/version.php"),
+    ("theme_boost", "theme/boost/version.php"),
+    ("theme_classic", "theme/classic/version.php"),
+    ("local_boost_union", "local/boost_union/version.php"),
+    ("local_kopere", "local/kopere/version.php"),
+    ("tool_mobile", "admin/tool/mobile/version.php"),
+    ("tool_dataprivacy", "admin/tool/dataprivacy/version.php"),
+    # Additional core and common third-party components. The per-run budget
+    # (--max-tests) decides how many are probed.
+    ("mod_page", "mod/page/version.php"),
+    ("mod_resource", "mod/resource/version.php"),
+    ("mod_url", "mod/url/version.php"),
+    ("mod_folder", "mod/folder/version.php"),
+    ("mod_label", "mod/label/version.php"),
+    ("mod_chat", "mod/chat/version.php"),
+    ("mod_survey", "mod/survey/version.php"),
+    ("mod_imscp", "mod/imscp/version.php"),
+    ("mod_choicegroup", "mod/choicegroup/version.php"),
+    ("mod_hvp", "mod/hvp/version.php"),
+    ("mod_bigbluebuttonbn", "mod/bigbluebuttonbn/version.php"),
+    ("mod_subsection", "mod/subsection/version.php"),
+    ("block_myoverview", "blocks/myoverview/version.php"),
+    ("block_timeline", "blocks/timeline/version.php"),
+    ("block_recent_activity", "blocks/recent_activity/version.php"),
+    ("block_course_summary", "blocks/course_summary/version.php"),
+    ("block_calendar_upcoming", "blocks/calendar_upcoming/version.php"),
+    ("block_online_users", "blocks/online_users/version.php"),
+    ("block_messages", "blocks/messages/version.php"),
+    ("block_badges", "blocks/badges/version.php"),
+    ("block_completionstatus", "blocks/completionstatus/version.php"),
+    ("block_globalsearch", "blocks/globalsearch/version.php"),
+    ("block_search_forums", "blocks/search_forums/version.php"),
+    ("block_selfcompletion", "blocks/selfcompletion/version.php"),
+    ("block_settings", "blocks/settings/version.php"),
+    ("block_site_main_menu", "blocks/site_main_menu/version.php"),
+    ("block_tags", "blocks/tags/version.php"),
+    ("block_myprofile", "blocks/myprofile/version.php"),
+    ("block_private_files", "blocks/private_files/version.php"),
+    ("block_quiz_results", "blocks/quiz_results/version.php"),
+    ("block_activity_modules", "blocks/activity_modules/version.php"),
+    ("block_admin_bookmarks", "blocks/admin_bookmarks/version.php"),
+    ("block_blog_menu", "blocks/blog_menu/version.php"),
+    ("block_blog_recent", "blocks/blog_recent/version.php"),
+    ("block_blog_tags", "blocks/blog_tags/version.php"),
+    ("block_course_list", "blocks/course_list/version.php"),
+    ("block_feedback", "blocks/feedback/version.php"),
+    ("block_login", "blocks/login/version.php"),
+    ("block_news_items", "blocks/news_items/version.php"),
+    ("block_participants", "blocks/participants/version.php"),
+    ("block_section_links", "blocks/section_links/version.php"),
+    ("block_social_activities", "blocks/social_activities/version.php"),
+    ("filter_activitynames", "filter/activitynames/version.php"),
+    ("filter_algebra", "filter/algebra/version.php"),
+    ("filter_censor", "filter/censor/version.php"),
+    ("filter_emoji", "filter/emoji/version.php"),
+    ("filter_displayh5p", "filter/displayh5p/version.php"),
+    ("filter_emailprotect", "filter/emailprotect/version.php"),
+    ("filter_glossary", "filter/glossary/version.php"),
+    ("filter_mediaplugin", "filter/mediaplugin/version.php"),
+    ("filter_tidy", "filter/tidy/version.php"),
+    ("filter_urltolink", "filter/urltolink/version.php"),
+    ("auth_cas", "auth/cas/version.php"),
+    ("auth_db", "auth/db/version.php"),
+    ("auth_email", "auth/email/version.php"),
+    ("auth_fc", "auth/fc/version.php"),
+    ("auth_imap", "auth/imap/version.php"),
+    ("auth_manual", "auth/manual/version.php"),
+    ("auth_mnet", "auth/mnet/version.php"),
+    ("auth_none", "auth/none/version.php"),
+    ("auth_radius", "auth/radius/version.php"),
+    ("auth_webservice", "auth/webservice/version.php"),
+    ("enrol_category", "enrol/category/version.php"),
+    ("enrol_cohort", "enrol/cohort/version.php"),
+    ("enrol_database", "enrol/database/version.php"),
+    ("enrol_external", "enrol/external/version.php"),
+    ("enrol_fee", "enrol/fee/version.php"),
+    ("enrol_flatfile", "enrol/flatfile/version.php"),
+    ("enrol_guest", "enrol/guest/version.php"),
+    ("enrol_imsenterprise", "enrol/imsenterprise/version.php"),
+    ("enrol_ldap", "enrol/ldap/version.php"),
+    ("enrol_meta", "enrol/meta/version.php"),
+    ("enrol_mnet", "enrol/mnet/version.php"),
+    ("enrol_paypal", "enrol/paypal/version.php"),
+    ("theme_fordson", "theme/fordson/version.php"),
+    ("theme_remui", "theme/remui/version.php"),
+    ("theme_adaptable", "theme/adaptable/version.php"),
+    ("theme_moove", "theme/moove/version.php"),
+    ("theme_efluid", "theme/efluid/version.php"),
+    ("theme_snap", "theme/snap/version.php"),
+    ("qtype_calculated", "question/type/calculated/version.php"),
+    ("qtype_formulas", "question/type/formulas/version.php"),
+    ("qtype_multichoice", "question/type/multichoice/version.php"),
+    ("qtype_truefalse", "question/type/truefalse/version.php"),
+    ("qtype_shortanswer", "question/type/shortanswer/version.php"),
+    ("qtype_essay", "question/type/essay/version.php"),
+    ("qtype_match", "question/type/match/version.php"),
+    ("qtype_numerical", "question/type/numerical/version.php"),
+    ("qtype_ddwtos", "question/type/ddwtos/version.php"),
+    ("qtype_ddimageortext", "question/type/ddimageortext/version.php"),
+    ("qtype_gapselect", "question/type/gapselect/version.php"),
+    ("availability_completion", "availability/condition/completion/version.php"),
+    ("availability_date", "availability/condition/date/version.php"),
+    ("availability_grade", "availability/condition/grade/version.php"),
+    ("availability_group", "availability/condition/group/version.php"),
+    ("availability_grouping", "availability/condition/grouping/version.php"),
+    ("availability_profile", "availability/condition/profile/version.php"),
+    ("contenttype_h5p", "contentbank/contenttype/h5p/version.php"),
+    ("dataformat_csv", "dataformat/csv/version.php"),
+    ("dataformat_excel", "dataformat/excel/version.php"),
+    ("dataformat_json", "dataformat/json/version.php"),
+    ("dataformat_ods", "dataformat/ods/version.php"),
+    ("dataformat_pdf", "dataformat/pdf/version.php"),
+    ("mlbackend_php", "mlbackend/php/version.php"),
+    ("payment_paypal", "payment/gateway/paypal/version.php"),
+    ("payment_stripe", "payment/gateway/stripe/version.php"),
+)
+
+_VERSION_KEYS = ("version", "release", "requires", "component", "maturity")
+
 
 class MoodlePluginTester:
-    """Class for testing vulnerabilities in Moodle Plugins"""
-    
-    def __init__(self, target_url, logger=None, timeout=30, proxy=None, cookies=None, delay=0):
-        """Initialize the Moodle Plugin tester"""
-        self.target_url = target_url
+    def __init__(
+        self,
+        target_url: str,
+        logger: Optional[logging.Logger] = None,
+        timeout: int = 30,
+        proxy: Optional[str] = None,
+        cookies: Optional[Dict[str, str]] = None,
+        delay: float = 0,
+        user_agent: Optional[str] = None,
+        verify_ssl: bool = True,
+        session: Optional[SecureSession] = None,
+        deep: bool = False,
+        max_tests: int = 50,
+        **_: Any,
+    ) -> None:
+        self.target_url = target_url.rstrip("/") + "/"
         self.timeout = timeout
-        self.proxy = proxy
-        self.cookies = cookies
-        self.delay = delay
-        self.version_info = None
-        self.installed_plugins = [] # Store detected plugins
-        self.vulnerable_plugin_db = self._load_vulnerable_plugin_db()
-        
-        # Set up logging
-        if logger:
-            self.logger = logger
+        self.deep = deep
+        self.max_tests = max(1, max_tests)
+        self.version_info: Dict[str, Any] = {}
+        self.logger = logger or logging.getLogger("MoodlePluginTester")
+        self.session = session or build_session(
+            verify_ssl=verify_ssl,
+            timeout=timeout,
+            user_agent=user_agent,
+            proxy=proxy,
+            cookies=cookies,
+        )
+
+    def set_version_info(self, version_info: Dict[str, Any]) -> None:
+        self.version_info = version_info or {}
+
+    def run_tests(self) -> Dict[str, List[Dict[str, Any]]]:
+        results: Dict[str, List[Dict[str, Any]]] = {"vulnerabilities": [], "info": []}
+        detected: List[str] = []
+
+        for component, path in _COMPONENTS[: self.max_tests]:
+            url = self.target_url + path
+            try:
+                response = self.session.get(url, timeout=self.timeout, allow_redirects=False)
+            except Exception:
+                continue
+            if response.status_code != 200:
+                continue
+
+            detected.append(component)
+            body = response.text or ""
+            source = self._extract_php_source(body)
+            if source:
+                results["vulnerabilities"].append(
+                    {
+                        "title": f"Source de version.php exposto: {component}",
+                        "description": (
+                            "O ficheiro version.php do componente é servido como texto, "
+                            "revelando a versão e caminhos internos. Isto facilita a "
+                            "correspondência com advisories específicos do plugin."
+                        ),
+                        "severity": "Low",
+                        "confidence": "high",
+                        "evidence": source[:800],
+                        "url": url,
+                        "remediation": (
+                            "Garantir que o PHP é executado e que ficheiros .php não são "
+                            "servidos como texto; bloquear acesso direto a version.php."
+                        ),
+                        "cwe": "CWE-538",
+                        "verified": True,
+                        "source": "plugin",
+                        "evidence_type": "passive",
+                    }
+                )
+
+        if detected:
+            results["info"].append(
+                {
+                    "title": "Componentes Moodle detetados",
+                    "description": (
+                        f"{len(detected)} componentes encontrados: "
+                        + ", ".join(detected[:30])
+                        + ". Inventário apenas; não implica vulnerabilidade."
+                    ),
+                    "severity": "Info",
+                    "verified": True,
+                    "source": "plugin",
+                    "evidence_type": "info",
+                }
+            )
         else:
-            self.logger = logging.getLogger("MoodlePluginTester")
-            self.logger.setLevel(logging.INFO)
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-        
-        # Initialize HTTP session
-        self.session = requests.Session()
-        if proxy:
-            self.session.proxies = {"http": proxy, "https": proxy}
-        if cookies:
-            self.session.cookies.update(cookies)
-
-    def _load_vulnerable_plugin_db(self):
-        """Load known vulnerable plugin information from a file"""
-        db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'vulnerable_plugins.json') # Adjust path as needed
-        try:
-            with open(db_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            self.logger.warning(f"Vulnerable plugin database not found at {db_path}. Plugin vulnerability checks will be limited.")
-            return {}
-        except json.JSONDecodeError:
-             self.logger.error(f"Error decoding vulnerable plugin database at {db_path}.")
-             return {}
-
-    def set_version_info(self, version_info):
-        """Set version information to guide testing"""
-        self.version_info = version_info
-
-    def run_tests(self):
-        """
-        Run all Plugin security tests
-        Returns a dictionary with results information including detected plugins
-        """
-        self.logger.info("Running Moodle Plugin security tests...")
-        
-        results = {
-            "vulnerabilities": [],
-            "info": [],
-            "plugins_detected": []
-        }
-        
-        # Step 1: Detect installed plugins
-        detected_plugins = self.detect_installed_plugins()
-        if detected_plugins:
-            self.installed_plugins = detected_plugins
-            results["plugins_detected"] = [p['name'] for p in detected_plugins]
-            results["info"].append({
-                "title": "Detected Plugins",
-                "description": f"Detected {len(detected_plugins)} potential plugins: {', '.join(results['plugins_detected'])}",
-                "severity": "Info"
-            })
-        else:
-             self.logger.info("Could not detect installed plugins.")
-             results["info"].append({
-                 "title": "Plugin Detection Failed",
-                 "description": "Could not reliably detect installed plugins.",
-                 "severity": "Info"
-             })
-             return results # Stop if we can't detect plugins
-             
-        # Step 2: Check detected plugins against known vulnerabilities
-        known_vulns = self.check_known_vulnerabilities()
-        if known_vulns:
-            results["vulnerabilities"].extend(known_vulns)
-            
-        # Step 3: Test for common plugin misconfigurations or weaknesses (Placeholder)
-        # E.g., check for default credentials in specific plugins, exposed sensitive paths
-        config_vulns = self.test_plugin_misconfigurations()
-        if config_vulns:
-             results["vulnerabilities"].extend(config_vulns)
-
-        self.logger.info("Plugin security tests completed.")
+            results["info"].append(
+                {
+                    "title": "Inventário de plugins limitado",
+                    "description": (
+                        "Não foi possível confirmar componentes por version.php. "
+                        "O servidor pode bloquear estes caminhos ou o alvo não é Moodle."
+                    ),
+                    "severity": "Info",
+                    "verified": True,
+                    "source": "plugin",
+                    "evidence_type": "info",
+                }
+            )
         return results
 
-    def detect_installed_plugins(self):
-        """Attempt to detect installed plugins by probing common paths and checking admin pages"""
-        self.logger.info("Attempting to detect installed plugins...")
-        detected = []
-        checked_paths = set()
-
-        # Common base paths for different types of plugins
-        plugin_base_paths = [
-            ("mod", "Activity Modules", "/mod/"),
-            ("blocks", "Blocks", "/blocks/"),
-            ("filter", "Filters", "/filter/"),
-            ("theme", "Themes", "/theme/"),
-            ("report", "Reports", "/report/"),
-            ("local", "Local Plugins", "/local/"),
-            ("admin/tool", "Admin Tools", "/admin/tool/"),
-            ("repository", "Repositories", "/repository/"),
-            ("auth", "Authentication Plugins", "/auth/"),
-            ("enrol", "Enrolment Plugins", "/enrol/"),
-            ("grade/export", "Grade Exports", "/grade/export/"),
-            ("grade/import", "Grade Imports", "/grade/import/"),
-            ("grade/report", "Grade Reports", "/grade/report/"),
-            ("message/output", "Message Outputs", "/message/output/"),
-            ("question/type", "Question Types", "/question/type/"),
-            ("plagiarism", "Plagiarism Plugins", "/plagiarism/"),
-            # Add more common plugin type paths if needed
+    @staticmethod
+    def _extract_php_source(body: str) -> Optional[str]:
+        if "<?php" not in body or "$plugin->" not in body:
+            return None
+        lines = [line.strip() for line in body.splitlines() if line.strip()]
+        relevant = [
+            line
+            for line in lines
+            if "<?php" in line or any(key in line for key in _VERSION_KEYS)
         ]
-
-        # Method 1: Probe common plugin directories
-        for ptype, desc, base_path in plugin_base_paths:
-            if self.delay > 0:
-                time.sleep(self.delay)
-                
-            list_url = f"{self.target_url}{base_path}"
-            try:
-                response = self.session.get(list_url, timeout=self.timeout)
-                if response.status_code == 200 and "Index of" not in response.text: # Avoid simple directory listing pages
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    # Look for links pointing to subdirectories within the base path
-                    for link in soup.find_all('a'):
-                        href = link.get('href', '')
-                        # Basic check: does the link start with the base path or contain it?
-                        if base_path in href:
-                            # Try to extract the plugin name
-                            match = re.search(f"{re.escape(base_path)}([a-zA-Z0-9_]+)/?", href)
-                            if match:
-                                plugin_name = match.group(1)
-                                plugin_full_path = f"{base_path}{plugin_name}"
-                                if plugin_name not in ['admin', 'index', 'db', 'lang', 'lib', 'pix', 'tests', 'templates'] and plugin_full_path not in checked_paths:
-                                    self.logger.debug(f"Potentially detected plugin '{plugin_name}' ({desc}) at {plugin_full_path}")
-                                    detected.append({"name": plugin_name, "type": ptype, "path": plugin_full_path})
-                                    checked_paths.add(plugin_full_path)
-            except Exception as e:
-                self.logger.debug(f"Error probing plugin path {base_path}: {str(e)}")
-
-        # Method 2: Check admin plugins overview page (requires admin privileges)
-        admin_plugins_url = f"{self.target_url}/admin/plugins.php"
-        try:
-            if self.delay > 0:
-                time.sleep(self.delay)
-            response = self.session.get(admin_plugins_url, timeout=self.timeout)
-            
-            if response.status_code == 200 and "login" not in response.url and "Plugin overview" in response.text:
-                self.logger.info("Accessing admin plugin overview page to refine plugin list.")
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # Look for specific structures listing plugins (this depends heavily on Moodle theme/version)
-                # Example: find table rows or divs that contain plugin links/names
-                # This requires inspecting the actual HTML of the plugins page
-                # Simplified example: look for links containing '/plugins/view.php?plugin='
-                for link in soup.find_all('a', href=re.compile(r'/plugins\.php\?plugin=([a-zA-Z0-9_]+)')):
-                     match = re.search(r'plugin=([a-zA-Z0-9_]+)', link['href'])
-                     if match:
-                         plugin_name = match.group(1)
-                         # Need to determine type/path - might require more scraping or assumptions
-                         # For now, just add the name if not already found
-                         if not any(p['name'] == plugin_name for p in detected):
-                             self.logger.debug(f"Detected plugin '{plugin_name}' from admin page.")
-                             # Attempt to guess common path
-                             guessed_path = f"/mod/{plugin_name}" # Default guess, might be wrong
-                             detected.append({"name": plugin_name, "type": "unknown", "path": guessed_path})
-                             checked_paths.add(guessed_path)
-            else:
-                self.logger.info("Could not access or parse admin plugin overview page (requires admin auth).")
-                
-        except Exception as e:
-            self.logger.error(f"Error checking admin plugins page: {str(e)}")
-
-        # Deduplicate based on name
-        final_detected = []
-        seen_names = set()
-        for plugin in detected:
-            if plugin['name'] not in seen_names:
-                final_detected.append(plugin)
-                seen_names.add(plugin['name'])
-                
-        self.logger.info(f"Detected {len(final_detected)} unique potential plugins.")
-        return final_detected
-
-    def check_known_vulnerabilities(self):
-        """Check detected plugins against the known vulnerability database"""
-        self.logger.info("Checking detected plugins against known vulnerability database...")
-        vulnerabilities = []
-        
-        if not self.installed_plugins:
-            self.logger.warning("No installed plugins detected, skipping known vulnerability check.")
-            return vulnerabilities
-            
-        if not self.vulnerable_plugin_db:
-             self.logger.warning("Vulnerable plugin database is empty, skipping check.")
-             return vulnerabilities
-
-        moodle_version = self.version_info.get("version") if self.version_info else None
-
-        for plugin in self.installed_plugins:
-            plugin_name = plugin['name']
-            plugin_type = plugin['type']
-            
-            if plugin_name in self.vulnerable_plugin_db:
-                vulns = self.vulnerable_plugin_db[plugin_name]
-                for vuln in vulns:
-                    # Check if the vulnerability applies to the detected Moodle version
-                    applies = True
-                    if moodle_version:
-                        if "affected_moodle_versions" in vuln:
-                             # Simple check: assumes versions are like '3.9', '4.1.2'
-                             # Needs a proper version comparison function
-                             # Placeholder: check if current version starts with any affected prefix
-                             is_affected_version = False
-                             for affected in vuln["affected_moodle_versions"]:
-                                 if moodle_version.startswith(affected): # Basic check
-                                     is_affected_version = True
-                                     break
-                             if not is_affected_version:
-                                 applies = False
-                                 
-                    # Check plugin version if possible (requires detecting plugin version)
-                    # This is hard without filesystem access or specific admin pages
-                    # We'll assume it applies if Moodle version matches for now
-                    
-                    if applies:
-                        self.logger.warning(f"Detected plugin '{plugin_name}' matches known vulnerability: {vuln.get('cve', vuln.get('title', 'Unknown CVE'))}")
-                        vulnerabilities.append({
-                            "title": f"Known Vulnerability in Plugin: {plugin_name} ({vuln.get('title', 'Details unavailable')})",
-                            "description": vuln.get('description', 'No description.'),
-                            "severity": vuln.get('severity', 'Medium'),
-                            "evidence": f"Plugin Name: {plugin_name}\nType: {plugin_type}\nCVE: {vuln.get('cve', 'N/A')}",
-                            "cve": vuln.get('cve'),
-                            "references": vuln.get('references', []),
-                            "remediation": vuln.get('remediation', "Update the plugin to a patched version or disable/remove it.")
-                        })
-                        
-        return vulnerabilities
-        
-    def test_plugin_misconfigurations(self):
-        """Test for common plugin misconfigurations (Placeholder)"""
-        self.logger.info("(Placeholder) Testing for common plugin misconfigurations...")
-        vulnerabilities = []
-        # Examples:
-        # - Check specific paths for debug info enablement (e.g., /local/myplugin/debug.php)
-        # - Check for default credentials if a plugin adds its own login (rare)
-        # - Check for exposed setup scripts (e.g., /mod/myplugin/install.php after install)
-        return vulnerabilities
+        return "\n".join(relevant[:20]) if relevant else body[:800]

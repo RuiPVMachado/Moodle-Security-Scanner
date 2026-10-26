@@ -3,7 +3,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
@@ -11,14 +11,19 @@ select = ["E", "F", "I"]
 [tool.ruff.lint.per-file-ignores]
 "moodle_scanner.py" = ["I001", "F401", "E501"]
 "moodle_security_scanner.py" = ["I001"]
+"scanner_gui.py" = ["E501"]
+"results_to_docx.py" = ["E501"]
+"results_to_txt.py" = ["E501"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 ignore_missing_imports = true
 follow_imports = "skip"
 warn_return_any = false
 warn_unused_configs = true
+disable_error_code = ["import-untyped"]
 files = [
-  "modules/schema.py",
-  "tests/test_scanner_core.py",
+  "moodle_scanner.py",
+  "modules",
+  "tests",
 ]

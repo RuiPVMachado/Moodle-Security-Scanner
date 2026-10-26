@@ -1,258 +1,227 @@
-# Moodle Security Scanner
+# Moodle Security Scanner 2.0
 
-A comprehensive security testing tool for Moodle Learning Management System.
+Evidence-based security testing for Moodle LMS.
 
-## Overview
+Version 2.0 replaces the old hard-coded CVE tables and heuristic "Critical"
+findings with live advisory data, exact version matching, passive checks and
+a small number of actively confirmed tests. Every finding is labelled with
+its source and whether it was actively verified.
 
-Moodle Security Scanner is a specialized tool designed to identify security vulnerabilities in Moodle LMS installations. The scanner implements a range of security tests covering common attack vectors including SQL injection, cross-site scripting (XSS), remote code execution (RCE), authentication bypasses, API security issues, and more.
+> **Authorization required.** Use this tool only against Moodle installations
+> you own or have written permission to test. Active modules (`xss`, `sqli`,
+> `lfi`) send requests to application logic and must not be used against
+> third-party sites.
 
-**Note:** This tool is intended for legitimate security testing with proper authorization. Unauthorized security testing against systems you don't own or have permission to test is illegal and unethical.
+## Principles
 
-## Features
-
-- **Version Detection**: Accurately identifies Moodle version to enable more precise vulnerability testing
-- **Authentication Testing**: Checks for authentication bypass vulnerabilities and weak credentials
-- **XSS Detection**: Tests for reflected, stored, and DOM-based cross-site scripting vulnerabilities
-- **Remote Code Execution**: Identifies potential RCE vulnerabilities including upload bypasses and code evaluation issues
-- **SQL Injection**: Tests for SQL injection vulnerabilities in GET/POST parameters and forms
-- **Local File Inclusion**: Detects LFI vulnerabilities that could expose sensitive files
-- **API Security**: Tests Moodle API endpoints for security issues
-- **Version-specific Vulnerabilities**: Targets known vulnerabilities based on detected version (where applicable within modules)
-- **Comprehensive Reporting**: Generate detailed reports in HTML, TXT, or JSON formats with evidence and remediation steps
+- **No invented CVEs.** CVEs come from OSV.dev, not from a hand-written
+  table. Moodle Security Announcements remain the manual authority for
+  advisories whose CVE is still pending.
+- **Version != exploit.** A version match means "this release is in a known
+  affected range"; it is not proof that the vulnerability is exploitable on
+  this deployment.
+- **Two evidence classes.** Findings are either `verified` (the scanner
+  observed the behaviour) or `version` (OSV advisory match). Reports keep them
+  separate.
+- **Bounded and respectful.** Requests have timeouts, response-size caps,
+  retries, a global rate limiter and per-module concurrency.
+- **No destructive payloads.** The scanner does not upload shells, create
+  questions, attempt authentication bypasses or send `alert(1)`.
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/RuiPVMachado/moodle-security-scanner.git
-cd moodle-security-scanner
-
-# Install requirements
-pip install -r requirements.txt
+git clone https://github.com/RuiPVMachado/Moodle-Security-Scanner.git
+cd Moodle-Security-Scanner
+python -m pip install -r requirements.txt
 ```
 
-## Usage
+Python 3.10+ is supported.
 
-Canonical command path:
+## Quick start
 
 ```bash
-python moodle_scanner.py -t https://your-moodle-site.com
+# Fast, mostly passive assessment
+python moodle_scanner.py -t https://moodle.example.com --profile fast -o report.json
+
+# Balanced: version/CVE, passive, auth, API, reflected-XSS canaries, plugin inventory
+# (includes the inert reflected-XSS canary, so use it only with authorization)
+python moodle_scanner.py -t https://moodle.example.com --authorized -o report.html
+
+# Deep, authorized test with credentials
+python moodle_scanner.py -t https://moodle.example.com \
+  --profile deep --authorized \
+  --username auditor --password '***' \
+  -o report.sarif
 ```
 
-`moodle_security_scanner.py` is kept as a backward-compatible wrapper and is deprecated.
+The scanner first requests the homepage, extracts `M.cfg.wwwroot` and rebases
+all requests on the real Moodle root. If the target is not Moodle it aborts
+unless `--force` is passed. If the exact release cannot be fingerprinted,
+supply it explicitly with `--moodle-version 4.1.11` so the CVE matcher can
+still work.
 
-GUI launcher (Windows-friendly):
+## Profiles
+
+| Profile | Modules | Typical use |
+| --- | --- | --- |
+| `fast` | version, cve, passive, auth, api | CI, quick exposure review |
+| `balanced` (default) | fast + xss, plugin, session | Normal assessment |
+| `deep` | balanced + sqli, lfi, rce | Authorized penetration test |
+| `external` | cve, passive, api, xss, sqli, lfi, plugin, supplychain | Black-box, no credentials |
+| `all` | every registered module | Explicit full run |
+
+`--modules` accepts a comma-separated list and overrides the profile's module
+list. `version` is always executed first. `--no-active` removes `xss`, `sqli`,
+`lfi`, `rce` and `session`.
+
+For a contracted black-box assessment without any Moodle account:
 
 ```bash
-python scanner_gui.py
+python moodle_scanner.py -t https://moodle.example.com \
+  --profile external --authorized \
+  --rate-limit 5 -o external-report.json
 ```
 
-The GUI lets you set target/options/modules, start/stop scans, and view live output in one window.
-You can also choose report output format: `JSON`, `Word (.docx)`, or `Both`.
+This profile never tries to log in or guess credentials. It uses the
+version/CVE layer, passive exposure checks, API/CORS/open-redirect checks,
+inert reflected-XSS canaries, differential SQLi, LFI signatures, component
+inventory and `composer.lock` supply-chain matching.
 
-Basic usage:
+## Modules
+
+| Module | What it does | Evidence |
+| --- | --- | --- |
+| `version` | Extracts `M.cfg.wwwroot`, mobile `$CFG->version`, generator/comment metadata and `lib/upgrade.txt` | Exact release or branch with confidence |
+| `cve` | Queries OSV.dev for `moodle/moodle` by exact version; enriches with CISA KEV and FIRST EPSS; optional safe validators | Version-based advisories + validation status |
+| `passive` | HTTPS/HSTS/TLS certificate/CSP/XFO/cookie flags, exposed backups/`.git`/`.env`/SQL dumps/phpinfo/Adminer, directory listing, debug errors, `security.txt` | Direct response evidence |
+| `auth` | Login form CSRF token, optional credential login, optional default-credential test, optional Host-header bypass | Confirmed only |
+| `api` | REST token checks, `service-nologin`, XML-RPC discovery, admin web-service exposure, CORS, open redirect, debug errors | Confirmed data/response |
+| `xss` | Reflected HTML-injection canaries (`<mss...>`), no JavaScript execution | Raw reflection of both canaries |
+| `sqli` | Differential database-error payloads; time-based only with `--deep` | Two payloads vs two controls |
+| `lfi` | `/etc/passwd`, `win.ini`, Moodle `config.php` (raw or base64) signatures | Actual file content |
+| `rce` | Explicit coverage marker. Known RCEs are matched by `cve`; exposures by `passive` | No destructive checks |
+| `plugin` | Conservative component inventory via `version.php` reachability; source disclosure if served as text | Inventory only |
+| `session` | Session-fixation check with credentials | Cookie unchanged across login |
+| `supplychain` | If `composer.lock` is exposed, checks exact Packagist versions against OSV | Version-based dependency advisories |
+
+## Vulnerability data
+
+The scanner does not maintain a CVE list. It uses:
+
+- **OSV.dev** — `POST https://api.osv.dev/v1/query` with
+  `{"package":{"name":"moodle/moodle","ecosystem":"Packagist"},"version":"4.1.11"}`.
+  OSV returns affected ranges, fixed releases and CVSS vectors. Results are
+  cached in `data/cache/` for 24 hours.
+- **composer.lock** — if public, exact Packagist dependency versions are sent
+  to OSV's batch API. This can reveal vulnerable libraries that Moodle core
+  advisories do not cover.
+- **CISA KEV** — `known_exploited_vulnerabilities.json` for prioritisation.
+- **FIRST EPSS** — `https://api.first.org/data/v1/epss` for exploitation
+  probability.
+- **Moodle Security Announcements** — `https://moodle.org/security/` is the
+  authoritative source for advisories whose CVE is still `Pending`. OSV
+  advisories usually link to the corresponding MSA; the scanner does not
+  scrape the MSA page automatically.
+- **Moodle plugins directory API** — `https://download.moodle.org/api/1.3/pluglist.php`
+  for component/version metadata. It is not a vulnerability database.
+
+`data/moodle_version_map.json` maps the numeric `$CFG->version` value
+(e.g. `2026042004`) to the official release (`5.2.4`). It is generated from
+Moodle git tags and can be regenerated when a new release is published:
 
 ```bash
-python moodle_scanner.py -t https://your-moodle-site.com
+python scripts/build_version_map.py
 ```
 
-Advanced options:
+## CVE validation: version match vs. working exploit
+
+A version match answers **"is this release in the affected range?"**. It does
+not prove that the vulnerable code path is reachable on this deployment.
+The scanner therefore labels every CVE finding with a validation status:
+
+| Status | Meaning |
+| --- | --- |
+| `available` | A safe read-only validator exists; run it with `--validate-cves --authorized` |
+| `confirmed` | The safe validator observed the vulnerable behaviour (not full exploitation) |
+| `not-confirmed` | The safe validator did not observe it; could be patched, backported or blocked |
+| `not-observed` | The target required authentication or the request failed |
+| `manual` | Requires an authenticated/state-changing action; not automated |
+
+Currently there is a safe validator for **CVE-2025-26533** (SQL injection in
+the course search module list filter). It sends a non-existent module name;
+vulnerable Moodle tries to use it as a table name and returns a database read
+exception. No SQL payload is injected and nothing is modified.
 
 ```bash
-python moodle_scanner.py -t https://your-moodle-site.com \
-  -m version,xss,rce,sqli,lfi,auth,api \
-  -o results.html \
-  --cookies "MoodleSession=yoursessioncookie" \
-  --delay 0.5 \
-  --threads 10 \
-  --verbose
+python moodle_scanner.py -t https://moodle.example.com \
+  -m version,cve --validate-cves --authorized \
+  --offline --no-enrich -o cve-report.json
 ```
 
-### Command-line Options
+CVEs that require creating a calculated question, uploading a file,
+restoring a backup, changing grades, or using a browser/account are marked
+`manual` with the reason. That is deliberate: automatically "proving" those
+would be an exploit framework, not a scanner. Version matches remain
+`version` findings until a safe check or manual validation confirms them.
 
-- `-t, --target`: Target Moodle URL (e.g., https://moodle.example.com) (required)
-- `-m, --modules`: Comma-separated list of modules to run (e.g., version,xss,auth) or 'all' (default: all)
-- `-o, --output`: Output file (e.g., results.json, results.html, results.txt or results.log)
-- `--proxy`: Proxy URL (e.g., http://127.0.0.1:8080)
-- `--cookies`: Cookies to use in requests (e.g., 'name1=value1; name2=value2' or "{'name1': 'value1', 'name2': 'value2'}")
-- `--timeout`: Request timeout in seconds (default: 30)
-- `--delay`: Delay between requests in seconds (can be a decimal) (default: 0)
-- `--threads`: Number of threads to use for testing (default: 5)
-- `--user-agent`: User-agent string to use (default: Mozilla/5.0 ...)
-- `--no-verify-ssl`: Disable SSL certificate verification
-- `-v, --verbose`: Enable verbose output
-- `-q, --quiet`: Enable quiet mode (only errors will be displayed)
-- `--version`: Show the version number and exit
+## Reports
 
-## Testing Modules
+| Format | Command | Notes |
+| --- | --- | --- |
+| JSON | `-o report.json` | Full structured output, schema 2.0 |
+| HTML | `-o report.html` | Escaped output, severity badges, CVSS/EPSS/KEV |
+| TXT | `-o report.txt` | Manager-friendly plain text |
+| SARIF | `-o report.sarif` | GitHub Code Scanning / CI integration |
 
-The scanner includes the following testing modules:
-
-| Module  | Description                                            |
-| ------- | ------------------------------------------------------ |
-| version | Detects Moodle version information                     |
-| auth    | Tests authentication security including login bypasses |
-| xss     | Tests for cross-site scripting vulnerabilities         |
-| rce     | Tests for remote code execution vulnerabilities        |
-| sqli    | Tests for SQL injection vulnerabilities                |
-| lfi     | Tests for local file inclusion vulnerabilities         |
-| api     | Tests API endpoints for security issues                |
-
-## Report Formats
-
-The scanner supports multiple report formats, each providing different levels of detail:
-
-### HTML Report
+For CI:
 
 ```bash
-python moodle_scanner.py -t https://your-moodle-site.com -o report.html
+python moodle_scanner.py -t "$MOODLE_URL" --profile fast --offline \
+  --fail-on High -o report.sarif
 ```
 
-Generates a visually formatted HTML report with color-coded vulnerabilities, detailed evidence, and remediation steps.
+`--fail-on Critical|High|Medium|Low` exits with code `2` when a finding at or
+above the threshold exists. `--offline` uses cached OSV/KEV/EPSS data only.
 
-### Text Report
+## Accuracy and limitations
+
+- No scanner can guarantee zero false positives. This tool reduces them by
+  requiring controls, real file signatures, exact versions and explicit
+  labels, and by refusing to call a page "vulnerable" just because it returned
+  HTTP 200.
+- Reflected-XSS findings prove HTML injection, not JavaScript execution. A
+  browser confirmation is still required for an executable-XSS claim.
+- SQLi error-based findings prove an error delta, not full data extraction.
+- A CVE marked `confirmed` by a safe validator means the vulnerable behaviour
+  was observed, not that data was extracted or code executed. Full exploitation
+  is out of scope.
+- Version-based findings must be confirmed against the installed build and
+  patches; backports and vendor builds can change applicability.
+- Plugin CVEs require the plugin version. The `plugin` module reports an
+  inventory and source disclosure, not unverified plugin CVEs.
+- Stored XSS, DOM XSS, SSRF, deserialization and authenticated business-logic
+  flaws require a browser, a test account and a dedicated manual assessment.
+
+## Development
 
 ```bash
-python moodle_scanner.py -t https://your-moodle-site.com -o report.txt
-```
-
-Creates a plain text report that can be viewed in any text editor.
-
-### Manager TXT from existing JSON
-
-If you already have `results.json`, you can generate a manager-friendly text report without re-running the scan:
-
-```bash
-python results_to_txt.py -i results.json -o manager_report.txt
-```
-
-This includes remediation steps, prioritization, and safe validation checklists.
-
-### Manager Word (.docx) from existing JSON
-
-```bash
-python results_to_docx.py -i results.json -o manager_report.docx
-```
-
-This generates a manager-ready Word report with prioritized findings, remediation actions, and safe validation checklists.
-
-### JSON Report
-
-```bash
-python moodle_scanner.py -t https://your-moodle-site.com -o report.json
-```
-
-Produces a structured JSON file that can be imported into other security tools or processed programmatically.
-
-## Security Considerations
-
-- Always obtain proper authorization before testing any Moodle installation.
-- Use the `--delay` option to prevent overloading the target server.
-- Consider using a test/staging environment rather than a production system.
-- Set appropriate timeouts to prevent hanging connections.
-- The tool is designed to minimize false positives but review all findings.
-
-## Example Output
-
-```
-╔══════════════════════════════════════════════════════════╗
-║                                                          ║
-║  ███╗   ███╗ ██████╗  ██████╗ ██████╗ ██╗     ███████╗  ║
-║  ████╗ ████║██╔═══██╗██╔═══██╗██╔══██╗██║     ██╔════╝  ║
-║  ██╔████╔██║██║   ██║██║   ██║██║  ██║██║     █████╗    ║
-║  ██║╚██╔╝██║██║   ██║██║   ██║██║  ██║██║     ██╔══╝    ║
-║  ██║ ╚═╝ ██║╚██████╔╝╚██████╔╝██████╔╝███████╗███████╗  ║
-║  ╚═╝     ╚═╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝╚══════╝  ║
-║                                                          ║
-║  Security Scanner v1.0.1                                 ║
-║  A comprehensive security testing tool for Moodle LMS    ║
-║                                                          ║
-╚══════════════════════════════════════════════════════════╝
-
-Target: https://moodle.example.com/
-Modules: version, auth, xss, rce, sqli, lfi, api
-Starting scan at: 2023-11-12 09:15:23
-
-[*] Detecting Moodle version...
-[+] Detected Moodle version: 3.11.4
-
-[*] Running auth tests...
-[!] Weak Default Credentials: The admin account uses default credentials.
-
-[*] Running xss tests...
-[!] Reflected XSS Vulnerability: The /search/index.php page is vulnerable to reflected XSS via the query parameter.
-
-[*] Running rce tests...
-[!] Calculated Question RCE Vulnerability: The Moodle installation is vulnerable to a Remote Code Execution vulnerability in calculated questions.
-
-====================================================
-Scan Summary for https://moodle.example.com/
-====================================================
-
-Moodle Information:
-Version: 3.11.4
-
-Vulnerability Summary:
-Total vulnerabilities found: 3
-Critical: 1
-High: 1
-Medium: 1
-Low: 0
-Info: 0
-
-Vulnerabilities by Module:
-version: 0
-auth: 1
-xss: 1
-rce: 1
-sqli: 0
-lfi: 0
-api: 0
-
-Top Vulnerabilities:
-1. [Critical] Calculated Question RCE Vulnerability
-2. [High] Reflected XSS Vulnerability
-3. [Medium] Weak Default Credentials
-
-====================================================
-```
-
-## Vulnerability Details in Reports
-
-Each vulnerability report includes:
-
-- **Severity**: Critical, High, Medium, Low, or Info classification
-- **Description**: Detailed explanation of the vulnerability
-- **Evidence**: The specific response or content that triggered detection
-- **URL**: The exact URL where the vulnerability was found
-- **Remediation**: Recommended steps to fix the vulnerability
-- **References**: Links to CVEs, CWEs, or other resources (where applicable)
-- **Payload**: The test payload that triggered the vulnerability (where applicable)
-
-## Performance Considerations
-
-The Local File Inclusion (LFI) module may take longer to complete as it tests multiple endpoints, parameters, and payloads. To improve performance:
-
-- Use a shorter delay value (e.g., `-d 0.1`)
-- Run specific modules instead of all (e.g., `-m version,rce,auth`)
-- Use the `--timeout` parameter to set shorter request timeouts
-- Increase `--threads` gradually (e.g., 8-15) and monitor server impact
-- Keep `--verbose` off for faster/cleaner runs unless troubleshooting
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Quality Checks
-
-Run local checks before opening a PR:
-
-```bash
-ruff check moodle_scanner.py moodle_security_scanner.py modules/schema.py tests
-mypy modules/schema.py tests/test_scanner_core.py
+ruff check .
+mypy modules moodle_scanner.py
 pytest -q
+pip-audit -r requirements.txt
 ```
+
+The test suite uses local mock HTTP responses and does not scan the internet.
+CI runs lint, type checking and tests on Python 3.11 and 3.13.
+
+## Legacy entry points
+
+`moodle_security_scanner.py` remains a deprecated wrapper for
+`moodle_scanner.py`. `results_to_txt.py` and `results_to_docx.py` can convert
+an existing JSON report into manager-oriented TXT/DOCX files.
 
 ## Disclaimer
 
-This tool is provided for educational and legitimate security testing purposes only. The authors accept no liability for misuse or damage caused by this program.
+This tool is provided for educational and legitimate security testing only.
+The authors accept no liability for misuse or damage caused by this program.

@@ -33,6 +33,19 @@ var/
 .env
 .venv
 venv/
+
+# Scan outputs can contain sensitive target data
+results.*
+manager_results.*
+report.*
+smoke*.json
+*.sarif
+
+# Local caches and tool state
+data/cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 ENV/
 
 # Ignore IDE specific files
